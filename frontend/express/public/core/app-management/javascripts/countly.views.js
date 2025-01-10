@@ -28,6 +28,9 @@
             },
             hasAppAdminRights: function() {
                 return countlyAuth.validateAppAdmin();
+            },
+            authToken: function() {
+                return countlyGlobal.auth_token;
             }
         },
         data: function() {
@@ -50,6 +53,7 @@
             });
             var appList = Object.keys(countlyGlobal.admin_apps).map(function(id) {
                 countlyGlobal.apps[id].image = "appimages/" + id + ".png?" + Date.now().toString();
+                countlyGlobal.apps[id].salt = countlyGlobal.apps[id].salt || countlyGlobal.apps[id].checksum_salt;
                 return {
                     label: countlyGlobal.apps[id].name,
                     value: id
@@ -434,7 +438,8 @@
                     type: "GET",
                     url: countlyCommon.API_PARTS.apps.w + '/update',
                     data: {
-                        args: JSON.stringify(doc)
+                        args: JSON.stringify(doc),
+                        app_id: doc.app_id
                     },
                     dataType: "json",
                     success: function(data) {
@@ -491,9 +496,11 @@
                             CountlyHelpers.alert(jQuery.i18n.map["management-applications.application-no-details"], "red");
                         }
                     },
-                    error: function() {
+                    error: function(e) {
                         self.loadingDetails = false;
-                        CountlyHelpers.alert(jQuery.i18n.map["management-applications.application-no-details"], "red");
+                        if (e && e.status !== 0) {
+                            CountlyHelpers.alert(jQuery.i18n.map["management-applications.application-no-details"], "red");
+                        }
                     }
                 });
             },
@@ -507,7 +514,8 @@
                     type: "GET",
                     url: countlyCommon.API_PARTS.apps.w + '/update',
                     data: {
-                        args: JSON.stringify(args)
+                        args: JSON.stringify(args),
+                        app_id: args.app_id
                     },
                     dataType: "json",
                     success: function(data) {
@@ -602,10 +610,14 @@
                     return changedKey === key;
                 });
             },
-            addChangeKeyIfNotFound: function(key) {
-                var self = this;
-                if (!this.isChangeKeyFound(key)) {
-                    self.changeKeys.push(key);
+            addChangeKey: function(key, value, parts) {
+                var index = this.changeKeys.indexOf(key);
+                if (index > -1) {
+                    this.changeKeys.splice(index, 1);
+                }
+                var pluginsData = countlyGlobal.apps[this.selectedApp].plugins;
+                if (!pluginsData[parts[0]] || pluginsData[parts[0]][parts[1]] !== value) {
+                    this.changeKeys.push(key);
                 }
             },
             compare: function(editedObject, selectedApp) {
@@ -614,7 +626,7 @@
                     return differences;
                 }
                 else {
-                    ["name", "category", "type", "key", "country", "timezone", "salt", "_id", "redirect_url"].forEach(function(currentKey) {
+                    ["name", "category", "type", "key", "country", "timezone", "salt", "_id", "redirect_url", "app_domain"].forEach(function(currentKey) {
                         if (editedObject[currentKey] !== selectedApp[currentKey]) {
                             differences.push(currentKey);
                         }
@@ -664,12 +676,13 @@
              * @param {Boolean} isInitializationCall used by plugins with nested properties to initialize/prepare plugin 
              * config object while not counting it as state change.
              */
+
             onChange: function(key, value, isInitializationCall) {
                 var parts = key.split(".");
                 this.updateAppSettings(key, value, parts);
                 this.updateChangeByLevel(value, parts);
                 if (!isInitializationCall) {
-                    this.addChangeKeyIfNotFound(key);
+                    this.addChangeKey(key, value, parts);
                 }
                 this.appSettings = Object.assign({}, this.appSettings);
             },
@@ -692,6 +705,10 @@
                             this.appSettings[i] = app.appManagementViews[i];
                         }
                         for (var j in app.appManagementViews[i].inputs) {
+                            if (j === 'consolidate') {
+                                this.appSettings[i].inputs[j].value = this.getConsolidatedApps();
+                                continue;
+                            }
                             var parts = j.split(".");
                             if (parts.length === 2) {
                                 if (plugins[parts[0]] && typeof plugins[parts[0]][parts[1]] !== "undefined") {
@@ -731,10 +748,18 @@
                         var appSettingKeys = Object.keys(app.appManagementViews);
                         for (var i = 0; i < appSettingKeys.length; i++) {
                             if (self.changes[appSettingKeys[i]]) {
-                                var subKeys = Object.keys(app.appManagementViews[appSettingKeys[i]].inputs);
-                                for (var j = 0; j < subKeys.length; j++) {
-                                    if (!self.changes[appSettingKeys[i]][subKeys[j].split('.', 2)[1]]) {
-                                        self.changes[appSettingKeys[i]][subKeys[j].split('.', 2)[1]] = app.appManagementViews[appSettingKeys[i]].inputs[subKeys[j]].value;
+                                if (appSettingKeys[i] === 'consolidate') {
+                                    self.changes[appSettingKeys[i]] = {
+                                        selectedApps: self.changes[appSettingKeys[i]] || [],
+                                        initialApps: self.getConsolidatedApps() || []
+                                    };
+                                }
+                                else {
+                                    var subKeys = Object.keys(app.appManagementViews[appSettingKeys[i]].inputs);
+                                    for (var j = 0; j < subKeys.length; j++) {
+                                        if (!self.changes[appSettingKeys[i]][subKeys[j].split('.', 2)[1]]) {
+                                            self.changes[appSettingKeys[i]][subKeys[j].split('.', 2)[1]] = app.appManagementViews[appSettingKeys[i]].inputs[subKeys[j]].value;
+                                        }
                                     }
                                 }
                             }
@@ -758,7 +783,40 @@
                                     countlyGlobal.apps[self.selectedApp].plugins = {};
                                 }
                                 for (var key in self.changes) {
-                                    countlyGlobal.apps[self.selectedApp].plugins[key] = self.changes[key];
+                                    if (key === 'consolidate') {
+                                        //self app can only be updated through other apps
+                                        //countlyGlobal.apps[self.selectedApp].plugins[key] = self.changes[key].selectedApps;
+                                        var removedSourceApps = self.changes.consolidate.selectedApps
+                                            .filter(function(x) {
+                                                return !self.changes.consolidate.initialApps.includes(x);
+                                            })
+                                            .concat(self.changes.consolidate.initialApps.filter(function(x) {
+                                                return !self.changes.consolidate.selectedApps.includes(x);
+                                            }));
+                                        for (var removalAppKey of removedSourceApps) {
+                                            if (!countlyGlobal.apps[removalAppKey].plugins || !countlyGlobal.apps[removalAppKey].plugins[key]) {
+                                                continue;
+                                            }
+                                            var removalIndex = countlyGlobal.apps[removalAppKey].plugins[key].indexOf(self.selectedApp);
+                                            if (removalIndex > -1) {
+                                                countlyGlobal.apps[removalAppKey].plugins[key].splice(removalIndex, 1);
+                                            }
+                                        }
+                                        for (var appKey of self.changes[key].selectedApps) {
+                                            if (!countlyGlobal.apps[appKey].plugins) {
+                                                countlyGlobal.apps[appKey].plugins = {};
+                                            }
+                                            if (!countlyGlobal.apps[appKey].plugins[key]) {
+                                                countlyGlobal.apps[appKey].plugins[key] = [self.selectedApp];
+                                            }
+                                            if (!countlyGlobal.apps[appKey].plugins[key].includes(self.selectedApp)) {
+                                                countlyGlobal.apps[appKey].plugins[key].push(self.selectedApp);
+                                            }
+                                        }
+                                    }
+                                    else {
+                                        countlyGlobal.apps[self.selectedApp].plugins[key] = self.changes[key];
+                                    }
                                 }
                                 self.resetChanges();
                             },
@@ -771,13 +829,24 @@
                                 }
                                 CountlyHelpers.notify({
                                     title: jQuery.i18n.map["configs.not-saved"],
-                                    message: error || resp.result || jQuery.i18n.map['management-applications.plugins.error.server'],
+                                    message: resp.errors || error || resp.result || jQuery.i18n.map['management-applications.plugins.error.server'],
                                     type: "error"
                                 });
                             }
                         });
                     }
                 });
+            },
+            getConsolidatedApps: function() {
+                var self = this;
+                return Object.keys(countlyGlobal.apps).filter(function(key) {
+                    if (key === self.selectedApp) {
+                        return false;
+                    }
+                    if (countlyGlobal.apps[key].plugins && countlyGlobal.apps[key].plugins.consolidate && countlyGlobal.apps[key].plugins.consolidate.length) {
+                        return countlyGlobal.apps[key].plugins.consolidate.includes(self.selectedApp);
+                    }
+                }) || [];
             }
         },
         mounted: function() {

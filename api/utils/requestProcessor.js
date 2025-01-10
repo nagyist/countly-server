@@ -22,7 +22,8 @@ const validateUserForDataReadAPI = validateRead;
 const validateUserForDataWriteAPI = validateUserForWrite;
 const validateUserForGlobalAdmin = validateGlobalAdmin;
 const validateUserForMgmtReadAPI = validateUser;
-const request = require('request');
+const request = require('countly-request')(plugins.getConfig("security"));
+const Handle = require('../../api/parts/jobs/index.js');
 
 var loaded_configs_time = 0;
 
@@ -38,7 +39,9 @@ const countlyApi = {
         users: require('../parts/mgmt/users.js'),
         apps: require('../parts/mgmt/apps.js'),
         appUsers: require('../parts/mgmt/app_users.js'),
-        eventGroups: require('../parts/mgmt/event_groups.js')
+        eventGroups: require('../parts/mgmt/event_groups.js'),
+        cms: require('../parts/mgmt/cms.js'),
+        datePresets: require('../parts/mgmt/date_presets.js'),
     }
 };
 
@@ -104,26 +107,108 @@ const processRequest = (params) => {
      * @type {object}
      * @global
      * @property {string} href - full URL href
-     * @property {res} res - nodejs response object
-     * @property {req} req - nodejs request object
+     * @property {http.ServerResponse} res - The HTTP response object
+     * @property {http.IncomingMessage} req - The HTTP request object
      * @param {APICallback} params.APICallback - API output handler. Which should handle API response
      * @property {object} qstring - all the passed fields either through query string in GET requests or body and query string for POST requests
-     * @property {string} apiPath - two top level url path, for example /i/analytics
+     * @property {string} apiPath - two top level url path, for example /i/analytics, first two segments from the fullPath
      * @property {string} fullPath - full url path, for example /i/analytics/dashboards
      * @property {object} files - object with uploaded files, available in POST requests which upload files
+     * @property {Object} [files.app_image] - Uploaded app image file
+     * @property {string} files.app_image.path - The temporary path of the uploaded app image file
+     * @property {string} files.app_image.name - The original name of the uploaded app image file
+     * @property {string} files.app_image.type - The MIME type of the uploaded app image file
+     * @property {number} files.app_image.size - The size (in bytes) of the uploaded app image file
      * @property {string} cancelRequest - Used for skipping SDK requests, if contains true, then request should be ignored and not processed. Can be set at any time by any plugin, but API only checks for it in beggining after / and /sdk events, so that is when plugins should set it if needed. Should contain reason for request cancelation
+     * @property {boolean} [blockResponses=false] - Flag to block responses from being sent
+     * @property {boolean} [forceProcessingRequestTimeout=false] - Flag to force processing request timeout
      * @property {boolean} bulk - True if this SDK request is processed from the bulk method
-     * @property {array} promises - Array of the promises by different events. When all promises are fulfilled, request counts as processed
+     * @property {Array<Promise>} promises - Array of the promises by different events. When all promises are fulfilled, request counts as processed
      * @property {string} ip_address - IP address of the device submitted request, exists in all SDK requests
      * @property {object} user - Data with some user info, like country geolocation, etc from the request, exists in all SDK requests
+     * @property {string} user.country - User's country
+     * @property {string} user.city - User's city
+     * @property {number} [user.tz] - User's timezone offset (in minutes)
      * @property {object} app_user - Document from the app_users collection for current user, exists in all SDK requests after validation
+     * @property {string} app_user.uid - Application user ID
+     * @property {string} app_user.did - Device ID
+     * @property {string} app_user.country - User's country
+     * @property {string} app_user.city - User's city
+     * @property {number} app_user.tz - User's timezone offset (in minutes)
+     * @property {Object} [app_user.custom] - Custom properties for the application user
      * @property {object} app_user_id - ID of app_users document for the user, exists in all SDK requests after validation
      * @property {object} app - Document for the app sending request, exists in all SDK requests after validation and after validateUserForDataReadAPI validation
+     * @property {string} app._id - ID of the app document
+     * @property {string} app.name - Name of the app
+     * @property {string} app.country - Country of the app
+     * @property {string} app.category - Category of the app
+     * @property {string} app.timezone - Timezone of the app
+     * @property {string} app.type - Type of the app
+     * @property {boolean} app.locked - Flag indicating if the app is locked
+     * @property {Object} app.plugins - Plugin-specific configuration for the app
      * @property {ObjectID} app_id - ObjectID of the app document, available after validation
      * @property {string} app_cc - Selected app country, available after validation
      * @property {string} appTimezone - Selected app timezone, available after validation
      * @property {object} member - All data about dashboard user sending the request, exists on all requests containing api_key, after validation through validation methods
+     * @property {string} member._id - ID of the dashboard user
+     * @property {boolean} member.global_admin - Flag indicating if the user has global admin rights
+     * @property {string} member.auth_token - The authentication token for the user
+     * @property {boolean} member.locked - Flag indicating if the user is locked
+     * @property {Array} [member.admin_of] - Array of app IDs the user is an admin of (legacy)
+     * @property {Array} [member.user_of] - Array of app IDs the user has user access to (legacy)
+     * @property {string} member.username - Username of the dashboard user
+     * @property {string} member.email - Email address of the dashboard user
+     * @property {string} member.full_name - Full name of the dashboard user
+     * @property {string} member.api_key - API key of the dashboard user
+     * @property {Object} member.permission - Object containing user's access permissions
+     * @property {Object} member.permission._ - Object containing special permissions
+     * @property {Array} member.permission._.u - Array of arrays containing app IDs the user has user access to
+     * @property {Array} member.permission._.a - Array of app IDs the user has admin access to
+     * @property {Object} [member.permission.c] - Object containing create permissions for specific apps
+     * @property {Object} [member.permission.c[app_id]] - Object containing create permissions for a specific app
+     * @property {boolean} [member.permission.c[app_id].all] - Flag indicating if the user has create access to all features in the app
+     * @property {Object} [member.permission.c[app_id].allowed] - Object containing allowed create permissions for the app
+     * @property {Object} [member.permission.r] - Object containing read permissions for specific apps
+     * @property {Object} [member.permission.r[app_id]] - Object containing read permissions for a specific app
+     * @property {boolean} [member.permission.r[app_id].all] - Flag indicating if the user has read access to all features in the app
+     * @property {Object} [member.permission.r[app_id].allowed] - Object containing allowed read permissions for the app
+     * @property {Object} [member.permission.u] - Object containing update permissions for specific apps
+     * @property {Object} [member.permission.u[app_id]] - Object containing update permissions for a specific app
+     * @property {boolean} [member.permission.u[app_id].all] - Flag indicating if the user has update access to all features in the app
+     * @property {Object} [member.permission.u[app_id].allowed] - Object containing allowed update permissions for the app
+     * @property {Object} [member.permission.d] - Object containing delete permissions for specific apps
+     * @property {Object} [member.permission.d[app_id]] - Object containing delete permissions for a specific app
+     * @property {boolean} [member.permission.d[app_id].all] - Flag indicating if the user has delete access to all features in the app
+     * @property {Object} [member.permission.d[app_id].allowed] - Object containing allowed delete permissions for the app
+     * @property {Object} member.eventList - Object containing event collections with replaced app names
+     * @property {Object} member.viewList - Object containing view collections with replaced app names
      * @property {timeObject} time - Time object for the request
+     * @property {string} request_hash - Hash of the request data
+     * @property {string} [previous_session] - ID of the user's previous session
+     * @property {number} [previous_session_start] - Start timestamp of the user's previous session
+     * @property {string} request_id - Unique ID for this request
+     * @property {string} [user_id] - ID of the user making the request
+     * @property {string} [formDataUrl] - URL encoded form data
+     * @property {boolean} [retry_request] - Flag indicating if this is a retry of a failed request
+     * @property {boolean} [populator] - Flag indicating if this request is from the populator
+     * @property {Object} urlParts - Parsed URL parts
+     * @property {Object} urlParts.query - Parsed query string as key-value pairs
+     * @property {string} urlParts.pathname - The URL path
+     * @property {string} urlParts.href - The full URL
+     * @property {Array<string>} paths - The URL path split into segments
+     * @property {function} [output] - Callback function to handle the API response
+     * @property {boolean} [waitForResponse] - If false, return immediately and do not wait for plugin chain execution to complete
+     * @property {string} [app_name] - Name of the app
+     * @property {number} time.mstimestamp - Request timestamp in milliseconds
+     * @property {Object} [app_user.ls] - Last session timestamp of the app user
+     * @property {boolean} [truncateEventValuesList=false] - Flag indicating whether to truncate event values list
+     * @property {number} [session_duration] - Total session duration
+     * @property {boolean} [is_os_processed=false] - Flag indicating if OS and OS version have been processed
+     * @property {Object} [processed_metrics] - Processed metrics data
+     * @property {boolean} [app_user.has_ongoing_session] - Flag indicating if the user has an ongoing session
+     * @property {number} [app_user.last_req] - Timestamp of the user's last request
+     * @property {Object} [dbDateIds] - Object with date IDs for different time periods
+     * @property {boolean} [dataTransformed=false] - Flag indicating if the data is already transformed
      */
     params.href = urlParts.href;
     params.qstring = params.qstring || {};
@@ -214,7 +299,7 @@ const processRequest = (params) => {
                     common.returnMessage(params, 400, 'Invalid parameter "requests"');
                     return false;
                 }
-                if (!plugins.getConfig("api", params.app && params.app.plugins, true).safe && !params.res.finished) {
+                if (!params.qstring.safe_api_response && !plugins.getConfig("api", params.app && params.app.plugins, true).safe && !params.res.finished) {
                     common.returnMessage(params, 200, 'Success');
                 }
                 common.blockResponses(params);
@@ -522,6 +607,27 @@ const processRequest = (params) => {
                     });
                     break;
                 }
+                /**
+                 * @api {get} /i/app_users/deleteExport/:id Deletes user export.
+                 * @apiName Delete user export
+                 * @apiGroup App User Management
+				 * @apiDescription Deletes user export.
+				 *
+                 * @apiParam {Number} id Id of export. For single user it would be similar to: appUser_644658291e95e720503d5087_1, but  for multiple users - appUser_62e253489315313ffbc2c457_HASH_3e5b86cb367a6b8c0689ffd80652d2bbcb0a3edf
+                 *
+                 * @apiQuery {String} app_id Application id
+                 *
+                 * @apiSuccessExample {json} Success-Response:
+                 * HTTP/1.1 200 OK
+                 * {
+                 *   "result":"Export deleted"
+                 * }
+                 * @apiErrorExample {json} Error-Response:
+                 * HTTP/1.1 400 Bad Request
+                 * {
+                 *  "result": "Missing parameter \"app_id\""
+                 * }
+                 */
                 case 'deleteExport': {
                     validateUserForWrite(params, function() {
                         countlyApi.mgmt.appUsers.deleteExport(paths[4], params, function(err) {
@@ -535,6 +641,26 @@ const processRequest = (params) => {
                     });
                     break;
                 }
+                /**
+                 * @api {get} /i/app_users/export Exports all data collected about app user
+                 * @apiName Export user data
+                 * @apiGroup App User Management
+                 *
+                 * @apiDescription Creates export and stores in database. export is downloadable on demand.
+                 * @apiQuery {String} app_id Application id
+                 * @apiQuery {String} query Query to match users to run export on. Query should be runnable on mongodb database. For example: {"uid":"1"} will find user, for whuch uid === "1" If is possible to export also multiple users in same export.
+                 *
+                 * @apiSuccessExample {json} Success-Response:
+                 * HTTP/1.1 200 OK
+                 * {
+                 *   "result": "appUser_644658291e95e720503d5087_1.json"
+                 * }
+                 * @apiErrorExample {json} Error-Response:
+                 * HTTP/1.1 400 Bad Request
+                 * {
+                 *  "result": "Missing parameter \"app_id\""
+                 * }
+                 */
                 case 'export': {
                     if (!params.qstring.app_id) {
                         common.returnMessage(params, 400, 'Missing parameter "app_id"');
@@ -640,7 +766,12 @@ const processRequest = (params) => {
                         validateAppAdmin(params, countlyApi.mgmt.apps.updateAppPlugins);
                     }
                     else {
-                        validateUserForGlobalAdmin(params, countlyApi.mgmt.apps.updateApp);
+                        if (params.qstring.app_id) {
+                            validateAppAdmin(params, countlyApi.mgmt.apps.updateApp);
+                        }
+                        else {
+                            validateUserForGlobalAdmin(params, countlyApi.mgmt.apps.updateApp);
+                        }
                     }
                     break;
                 case 'delete':
@@ -884,8 +1015,30 @@ const processRequest = (params) => {
                                     common.returnMessage(params, 400, "You can't add more than 12 items in overview");
                                     return;
                                 }
+                                //sanitize overview
+                                var allowedEventKeys = event.list;
+                                var allowedProperties = ['dur', 'sum', 'count'];
+                                var propertyNames = {
+                                    'dur': 'Dur',
+                                    'sum': 'Sum',
+                                    'count': 'Count'
+                                };
+                                for (let i = 0; i < update_array.overview.length; i++) {
+                                    update_array.overview[i].order = i;
+                                    update_array.overview[i].eventKey = update_array.overview[i].eventKey || "";
+                                    update_array.overview[i].eventProperty = update_array.overview[i].eventProperty || "";
+                                    if (allowedEventKeys.indexOf(update_array.overview[i].eventKey) === -1 || allowedProperties.indexOf(update_array.overview[i].eventProperty) === -1) {
+                                        update_array.overview.splice(i, 1);
+                                        i = i - 1;
+                                    }
+                                    else {
+                                        update_array.overview[i].is_event_group = (typeof update_array.overview[i].is_event_group === 'boolean' && update_array.overview[i].is_event_group) || false;
+                                        update_array.overview[i].eventName = update_array.overview[i].eventName || update_array.overview[i].eventKey;
+                                        update_array.overview[i].propertyName = propertyNames[update_array.overview[i].eventProperty];
+                                    }
+                                }
                                 //check for duplicates
-                                var overview_map = {};
+                                var overview_map = Object.create(null);
                                 for (let p = 0; p < update_array.overview.length; p++) {
                                     if (!overview_map[update_array.overview[p].eventKey]) {
                                         overview_map[update_array.overview[p].eventKey] = {};
@@ -915,8 +1068,12 @@ const processRequest = (params) => {
                             }
 
                             if (params.qstring.omitted_segments && params.qstring.omitted_segments !== "") {
+                                var omitted_segments_empty = false;
                                 try {
                                     params.qstring.omitted_segments = JSON.parse(params.qstring.omitted_segments);
+                                    if (JSON.stringify(params.qstring.omitted_segments) === '{}') {
+                                        omitted_segments_empty = true;
+                                    }
                                 }
                                 catch (SyntaxError) {
                                     params.qstring.omitted_segments = {}; console.log('Parse ' + params.qstring.omitted_segments + ' JSON failed', params.req.url, params.req.body);
@@ -929,6 +1086,14 @@ const processRequest = (params) => {
                                         "list": params.qstring.omitted_segments[k]
                                     });
                                     pull_us["segments." + k] = {$in: params.qstring.omitted_segments[k]};
+                                }
+                                if (omitted_segments_empty) {
+                                    var events = JSON.parse(params.qstring.event_map);
+                                    for (let k in events) {
+                                        if (update_array.omitted_segments[k]) {
+                                            delete update_array.omitted_segments[k];
+                                        }
+                                    }
                                 }
                             }
 
@@ -1038,7 +1203,7 @@ const processRequest = (params) => {
                                                         if (plugins.isPluginEnabled('drill')) {
                                                             //remove from drill
                                                             var eventHash = common.crypto.createHash('sha1').update(obj.key + params.qstring.app_id).digest('hex');
-                                                            common.drillDb.collection("drill_meta" + params.qstring.app_id).findOne({_id: "meta_" + eventHash}, function(err5, resEvent) {
+                                                            common.drillDb.collection("drill_meta").findOne({_id: params.qstring.app_id + "_meta_" + eventHash}, function(err5, resEvent) {
                                                                 if (err5) {
                                                                     console.log(err5);
                                                                 }
@@ -1048,18 +1213,16 @@ const processRequest = (params) => {
                                                                 resEvent = resEvent || {};
                                                                 resEvent.sg = resEvent.sg || {};
                                                                 for (let p = 0; p < obj.list.length; p++) {
-                                                                    if (resEvent.sg[obj.list[p]] && resEvent.sg[obj.list[p]].type === "bl") {
-                                                                        remove_biglists.push("meta_" + eventHash + "_sg." + obj.list[p]);
-                                                                    }
+                                                                    remove_biglists.push(params.qstring.app_id + "_meta_" + eventHash + "_sg." + obj.list[p]);
                                                                     newsg["sg." + obj.list[p]] = {"type": "s"};
                                                                 }
                                                                 //big list, delete also big list file
                                                                 if (remove_biglists.length > 0) {
-                                                                    common.drillDb.collection("drill_meta" + params.qstring.app_id).remove({_id: {$in: remove_biglists}}, function(err6) {
+                                                                    common.drillDb.collection("drill_meta").remove({_id: {$in: remove_biglists}}, function(err6) {
                                                                         if (err6) {
                                                                             console.log(err6);
                                                                         }
-                                                                        common.drillDb.collection("drill_meta" + params.qstring.app_id).update({_id: "meta_" + eventHash}, {$set: newsg}, function(err7) {
+                                                                        common.drillDb.collection("drill_meta").update({_id: params.qstring.app_id + "_meta_" + eventHash}, {$set: newsg}, function(err7) {
                                                                             if (err7) {
                                                                                 console.log(err7);
                                                                             }
@@ -1068,7 +1231,7 @@ const processRequest = (params) => {
                                                                     });
                                                                 }
                                                                 else {
-                                                                    common.drillDb.collection("drill_meta" + params.qstring.app_id).update({_id: "meta_" + eventHash}, {$set: newsg}, function() {
+                                                                    common.drillDb.collection("drill_meta").update({_id: params.qstring.app_id + "_meta_" + eventHash}, {$set: newsg}, function() {
                                                                         resolve();
                                                                     });
                                                                 }
@@ -1106,6 +1269,33 @@ const processRequest = (params) => {
                     });
                     break;
                 }
+                /**
+                 * @api {get} /i/events/delete_events Delete event
+                 * @apiName Delete Event
+                 * @apiGroup Events Management
+                 *
+                 * @apiDescription Deletes one or multiple events. Params can be send as POST and also as GET.
+                 * @apiQuery {String} app_id Application id
+                 * @apiQuery {String} events JSON array of event keys to delete. For example: ["event1", "event2"]. Value must be passed as string. (Array must be stringified before passing to API)
+                 *
+                 * @apiSuccessExample {json} Success-Response:
+                 * HTTP/1.1 200 OK
+                 * {
+                 *  "result":"Success"
+                 * }
+                 *
+                 * @apiErrorExample {json} Error-Response:
+                 * HTTP/1.1 400 Bad Request
+                 * {
+                 *   "result":"Missing parameter \"api_key\" or \"auth_token\""
+                 * }
+                 * 
+                 * @apiErrorExample {json} Error-Response:
+                 * HTTP/1.1 400 Bad Request
+                 * {
+                 *   "result":"Could not find event"
+                 * }
+                 */
                 case 'delete_events':
                 {
                     validateDelete(params, 'events', function() {
@@ -1124,23 +1314,6 @@ const processRequest = (params) => {
                         var app_id = params.qstring.app_id;
                         var updateThese = {"$unset": {}};
                         if (idss.length > 0) {
-                            for (let i = 0; i < idss.length; i++) {
-                                if (idss[i].indexOf('.') !== -1) {
-                                    updateThese.$unset["map." + idss[i].replace(/\./g, '\\u002e')] = 1;
-                                    updateThese.$unset["omitted_segments." + idss[i].replace(/\./g, '\\u002e')] = 1;
-                                }
-                                else {
-                                    updateThese.$unset["map." + idss[i]] = 1;
-                                    updateThese.$unset["omitted_segments." + idss[i]] = 1;
-                                }
-                                idss[i] = common.decode_html(idss[i]);//previously escaped, get unescaped id (because segments are using it)
-                                if (idss[i].indexOf('.') !== -1) {
-                                    updateThese.$unset["segments." + idss[i].replace(/\./g, '\\u002e')] = 1;
-                                }
-                                else {
-                                    updateThese.$unset["segments." + idss[i]] = 1;
-                                }
-                            }
 
                             common.db.collection('events').findOne({"_id": common.db.ObjectID(params.qstring.app_id)}, function(err, event) {
                                 if (err) {
@@ -1150,75 +1323,122 @@ const processRequest = (params) => {
                                     common.returnMessage(params, 400, "Could not find event");
                                     return;
                                 }
-                                //fix overview
-                                if (event.overview && event.overview.length) {
-                                    for (let i = 0; i < idss.length; i++) {
-                                        for (let j = 0; j < event.overview.length; j++) {
-                                            if (event.overview[j].eventKey === idss[i]) {
-                                                event.overview.splice(j, 1);
-                                                j = j - 1;
+                                let successIds = [];
+                                let failedIds = [];
+                                let promises = [];
+                                for (let i = 0; i < idss.length; i++) {
+                                    let collectionNameWoPrefix = common.crypto.createHash('sha1').update(idss[i] + app_id).digest('hex');
+                                    common.db.collection("events" + collectionNameWoPrefix).drop();
+                                    promises.push(new Promise((resolve, reject) => {
+                                        plugins.dispatch("/i/event/delete", {
+                                            event_key: idss[i],
+                                            appId: app_id
+                                        }, function(_, otherPluginResults) {
+                                            const rejectReasons = otherPluginResults?.reduce((acc, result) => {
+                                                if (result?.status === "rejected") {
+                                                    acc.push((result.reason && result.reason.message) || '');
+                                                }
+                                                return acc;
+                                            }, []);
+
+                                            if (rejectReasons?.length) {
+                                                failedIds.push(idss[i]);
+                                                log.e("Event deletion failed\n%j", rejectReasons.join("\n"));
+                                                reject("Event deletion failed. Failed to delete some data related to this Event.");
+                                                return;
+                                            }
+                                            else {
+                                                successIds.push(idss[i]);
+                                                resolve();
                                             }
                                         }
-                                    }
-                                    if (!updateThese.$set) {
-                                        updateThese.$set = {};
-                                    }
-                                    updateThese.$set.overview = event.overview;
+                                        );
+                                    }));
                                 }
 
-                                //remove from list
-                                if (typeof event.list !== 'undefined' && Array.isArray(event.list) && event.list.length > 0) {
-                                    for (let i = 0; i < idss.length; i++) {
-                                        let index = event.list.indexOf(idss[i]);
-                                        if (index > -1) {
-                                            event.list.splice(index, 1);
-                                            i = i - 1;
+                                Promise.allSettled(promises).then(async() => {
+                                    //remove from map, segments, omitted_segments
+                                    for (let i = 0; i < successIds.length; i++) {
+                                        successIds[i] = successIds[i] + ""; //make sure it is string to do not fail.
+                                        if (successIds[i].indexOf('.') !== -1) {
+                                            updateThese.$unset["map." + successIds[i].replace(/\./g, '\\u002e')] = 1;
+                                            updateThese.$unset["omitted_segments." + successIds[i].replace(/\./g, '\\u002e')] = 1;
+                                        }
+                                        else {
+                                            updateThese.$unset["map." + successIds[i]] = 1;
+                                            updateThese.$unset["omitted_segments." + successIds[i]] = 1;
+                                        }
+                                        successIds[i] = common.decode_html(successIds[i]);//previously escaped, get unescaped id (because segments are using it)
+                                        if (successIds[i].indexOf('.') !== -1) {
+                                            updateThese.$unset["segments." + successIds[i].replace(/\./g, '\\u002e')] = 1;
+                                        }
+                                        else {
+                                            updateThese.$unset["segments." + successIds[i]] = 1;
                                         }
                                     }
-                                    if (!updateThese.$set) {
-                                        updateThese.$set = {};
-                                    }
-                                    updateThese.$set.list = event.list;
-                                }
-                                //remove from order
-                                if (typeof event.order !== 'undefined' && Array.isArray(event.order) && event.order.length > 0) {
-                                    for (let i = 0; i < idss.length; i++) {
-                                        let index = event.order.indexOf(idss[i]);
-                                        if (index > -1) {
-                                            event.order.splice(index, 1);
-                                            i = i - 1;
-                                        }
-                                    }
-                                    if (!updateThese.$set) {
-                                        updateThese.$set = {};
-                                    }
-                                    updateThese.$set.order = event.order;
-                                }
-
-                                common.db.collection('events').update({"_id": common.db.ObjectID(app_id)}, updateThese, function(err2) {
-                                    if (err2) {
-                                        console.log(err2);
-                                        common.returnMessage(params, 400, err);
-                                    }
-                                    else {
-                                        for (let i = 0; i < idss.length; i++) {
-                                            var collectionNameWoPrefix = common.crypto.createHash('sha1').update(idss[i] + app_id).digest('hex');
-                                            common.db.collection("events" + collectionNameWoPrefix).drop(function() {});
-                                            plugins.dispatch("/i/event/delete", {
-                                                event_key: idss[i],
-                                                appId: app_id
-                                            });
-                                        }
-                                        plugins.dispatch("/systemlogs", {
-                                            params: params,
-                                            action: "event_deleted",
-                                            data: {
-                                                events: idss,
-                                                appID: app_id
+                                    //fix overview
+                                    if (event.overview && event.overview.length) {
+                                        for (let i = 0; i < successIds.length; i++) {
+                                            for (let j = 0; j < event.overview.length; j++) {
+                                                if (event.overview[j].eventKey === successIds[i]) {
+                                                    event.overview.splice(j, 1);
+                                                    j = j - 1;
+                                                }
                                             }
-                                        });
-                                        common.returnMessage(params, 200, 'Success');
+                                        }
+                                        if (!updateThese.$set) {
+                                            updateThese.$set = {};
+                                        }
+                                        updateThese.$set.overview = event.overview;
                                     }
+                                    //remove from list
+                                    if (typeof event.list !== 'undefined' && Array.isArray(event.list) && event.list.length > 0) {
+                                        for (let i = 0; i < successIds.length; i++) {
+                                            let index = event.list.indexOf(successIds[i]);
+                                            if (index > -1) {
+                                                event.list.splice(index, 1);
+                                                i = i - 1;
+                                            }
+                                        }
+                                        if (!updateThese.$set) {
+                                            updateThese.$set = {};
+                                        }
+                                        updateThese.$set.list = event.list;
+                                    }
+                                    //remove from order
+                                    if (typeof event.order !== 'undefined' && Array.isArray(event.order) && event.order.length > 0) {
+                                        for (let i = 0; i < successIds.length; i++) {
+                                            let index = event.order.indexOf(successIds[i]);
+                                            if (index > -1) {
+                                                event.order.splice(index, 1);
+                                                i = i - 1;
+                                            }
+                                        }
+                                        if (!updateThese.$set) {
+                                            updateThese.$set = {};
+                                        }
+                                        updateThese.$set.order = event.order;
+                                    }
+
+                                    await common.db.collection('events').update({ "_id": common.db.ObjectID(app_id) }, updateThese);
+
+                                    plugins.dispatch("/systemlogs", {
+                                        params: params,
+                                        action: "event_deleted",
+                                        data: {
+                                            events: successIds,
+                                            appID: app_id
+                                        }
+                                    });
+
+                                    common.returnMessage(params, 200, 'Success');
+
+                                }).catch((err2) => {
+                                    if (failedIds.length) {
+                                        log.e("Event deletion failed for following Event keys:\n%j", failedIds.join("\n"));
+                                    }
+                                    log.e("Event deletion failed\n%j", err2);
+                                    common.returnMessage(params, 500, { errorMessage: "Event deletion failed. Failed to delete some data related to this Event." });
                                 });
                             });
                         }
@@ -1337,6 +1557,9 @@ const processRequest = (params) => {
                 break;
             }
             case '/i': {
+                if ([true, "true"].includes(plugins.getConfig("api", params.app && params.app.plugins, true).trim_trailing_ending_spaces)) {
+                    params.qstring = common.trimWhitespaceStartEnd(params.qstring);
+                }
                 params.ip_address = params.qstring.ip_address || common.getIpAddress(params.req);
                 params.user = {};
 
@@ -1402,8 +1625,36 @@ const processRequest = (params) => {
                 case 'permissions':
                     validateRead(params, 'core', function() {
                         var features = ["core", "events" /* , "global_configurations", "global_applications", "global_users", "global_jobs", "global_upload" */];
-                        plugins.dispatch("/permissions/features", {params: params, features: features}, function() {
-                            common.returnOutput(params, features);
+                        /*
+                            Example structure for featuresPermissionDependency Object
+                            {
+                                [FEATURE name which need other permissions]:{
+                                    [CRUD permission of FEATURE]: {
+                                        [DEPENDENT_FEATURE name]:[DEPENDENT_FEATURE required CRUD permissions array]
+                                    },
+                                    .... other CRUD permission if necessary
+                                }
+                            },
+                            {
+                                data_manager: Transformations:{
+                                    c:{
+                                        data_manager:['r','u']
+                                    },
+                                    r:{
+                                        data_manager:['r']
+                                    },
+                                    u:{
+                                        data_manager:['r','u']
+                                    },
+                                    d:{
+                                        data_manager:['r','u']
+                                    },
+                                }
+                            }
+                        */
+                        var featuresPermissionDependency = {};
+                        plugins.dispatch("/permissions/features", { params: params, features: features, featuresPermissionDependency: featuresPermissionDependency }, function() {
+                            common.returnOutput(params, {features, featuresPermissionDependency});
                         });
                     });
                     break;
@@ -1433,6 +1684,22 @@ const processRequest = (params) => {
                     validateUserForMgmtReadAPI(countlyApi.mgmt.appUsers.loyalty, params);
                     break;
                 }
+                /**
+                 * @api {get} /o/app_users/download/:id Downloads user export.
+                 * @apiName Download user export
+                 * @apiGroup App User Management
+				 * @apiDescription Downloads users export
+				 *
+                 * @apiParam {Number} id Id of export. For single user it would be similar to: appUser_644658291e95e720503d5087_1, but  for multiple users - appUser_62e253489315313ffbc2c457_HASH_3e5b86cb367a6b8c0689ffd80652d2bbcb0a3edf
+                 *
+                 * @apiQuery {String} app_id Application id
+                 *
+                 * @apiErrorExample {json} Error-Response:
+                 * HTTP/1.1 400 Bad Request
+                 * {
+                 *  "result": "Missing parameter \"app_id\""
+                 * }
+                 */
                 case 'download': {
                     if (paths[4] && paths[4] !== '') {
                         validateUserForRead(params, function() {
@@ -1557,6 +1824,9 @@ const processRequest = (params) => {
                 switch (paths[3]) {
                 case 'all':
                     validateRead(params, 'core', () => {
+                        if (!params.qstring.query) {
+                            params.qstring.query = {};
+                        }
                         if (typeof params.qstring.query === "string") {
                             try {
                                 params.qstring.query = JSON.parse(params.qstring.query);
@@ -1597,6 +1867,9 @@ const processRequest = (params) => {
                     break;
                 case 'count':
                     validateRead(params, 'core', () => {
+                        if (!params.qstring.query) {
+                            params.qstring.query = {};
+                        }
                         if (typeof params.qstring.query === "string") {
                             try {
                                 params.qstring.query = JSON.parse(params.qstring.query);
@@ -1629,6 +1902,9 @@ const processRequest = (params) => {
                     break;
                 case 'list':
                     validateRead(params, 'core', () => {
+                        if (!params.qstring.query) {
+                            params.qstring.query = {};
+                        }
                         if (typeof params.qstring.query === "string") {
                             try {
                                 params.qstring.query = JSON.parse(params.qstring.query);
@@ -1791,20 +2067,22 @@ const processRequest = (params) => {
                             common.returnMessage(params, 400, 'Missing parameter "collection"');
                             return false;
                         }
-                        if (typeof params.qstring.query === "string") {
-                            try {
-                                params.qstring.query = JSON.parse(params.qstring.query, common.reviver);
-                            }
-                            catch (ex) {
-                                params.qstring.query = null;
-                            }
-                        }
                         if (typeof params.qstring.filter === "string") {
                             try {
                                 params.qstring.query = JSON.parse(params.qstring.filter, common.reviver);
                             }
                             catch (ex) {
-                                params.qstring.query = null;
+                                common.returnMessage(params, 400, "Failed to parse query. " + ex.message);
+                                return false;
+                            }
+                        }
+                        else if (typeof params.qstring.query === "string") {
+                            try {
+                                params.qstring.query = JSON.parse(params.qstring.query, common.reviver);
+                            }
+                            catch (ex) {
+                                common.returnMessage(params, 400, "Failed to parse query. " + ex.message);
+                                return false;
                             }
                         }
                         if (typeof params.qstring.projection === "string") {
@@ -1841,6 +2119,15 @@ const processRequest = (params) => {
                             }
                         }
 
+                        if (typeof params.qstring.get_index === "string") {
+                            try {
+                                params.qstring.get_index = JSON.parse(params.qstring.get_index);
+                            }
+                            catch (ex) {
+                                params.qstring.get_index = null;
+                            }
+                        }
+
                         dbUserHasAccessToCollection(params, params.qstring.collection, (hasAccess) => {
                             if (hasAccess) {
                                 countlyApi.data.exports.fromDatabase({
@@ -1852,8 +2139,7 @@ const processRequest = (params) => {
                                     sort: params.qstring.sort,
                                     limit: params.qstring.limit,
                                     skip: params.qstring.skip,
-                                    type: params.qstring.type,
-                                    filename: params.qstring.filename
+                                    type: params.qstring.type
                                 });
                             }
                             else {
@@ -1877,6 +2163,32 @@ const processRequest = (params) => {
                                 params.qstring.data = {};
                             }
                         }
+
+                        if (params.qstring.projection) {
+                            try {
+                                params.qstring.projection = JSON.parse(params.qstring.projection);
+                            }
+                            catch (ex) {
+                                params.qstring.projection = {};
+                            }
+                        }
+
+                        if (params.qstring.columnNames) {
+                            try {
+                                params.qstring.columnNames = JSON.parse(params.qstring.columnNames);
+                            }
+                            catch (ex) {
+                                params.qstring.columnNames = {};
+                            }
+                        }
+                        if (params.qstring.mapper) {
+                            try {
+                                params.qstring.mapper = JSON.parse(params.qstring.mapper);
+                            }
+                            catch (ex) {
+                                params.qstring.mapper = {};
+                            }
+                        }
                         countlyApi.data.exports.fromRequest({
                             params: params,
                             path: params.qstring.path,
@@ -1884,7 +2196,10 @@ const processRequest = (params) => {
                             method: params.qstring.method,
                             prop: params.qstring.prop,
                             type: params.qstring.type,
-                            filename: params.qstring.filename
+                            filename: params.qstring.filename,
+                            projection: params.qstring.projection,
+                            columnNames: params.qstring.columnNames,
+                            mapper: params.qstring.mapper,
                         });
                     }, params);
                     break;
@@ -1940,6 +2255,7 @@ const processRequest = (params) => {
                         });
 
                         countlyApi.data.exports.fromRequestQuery({
+                            db: (params.qstring.db === "countly_drill") ? common.drillDb : (params.qstring.dbs === "countly_drill") ? common.drillDb : common.db,
                             params: params,
                             path: params.qstring.path,
                             data: params.qstring.data,
@@ -2378,6 +2694,33 @@ const processRequest = (params) => {
 
                     validateUserForGlobalAdmin(params, countlyApi.data.fetch.fetchJobs, 'jobs');
                     break;
+                case 'suspend_job': {
+                    /**
+                     * @api {get} /o?method=suspend_job Suspend Job
+                     * @apiName SuspendJob
+                     * @apiGroup Jobs
+                     *  
+                     * @apiDescription Suspend the selected job
+                     * * 
+                     * @apiSuccessExample {json} Success-Response:
+                     * HTTP/1.1 200 OK
+                     * {
+                     *  "result": true,
+                     *  "message": "Job suspended successfully"
+                     * }
+                     * 
+                     * @apiErrorExample {json} Error-Response:
+                     * HTTP/1.1 400 Bad Request
+                     * {
+                     *  "result": "Updating job status failed" 
+                     * }
+                     * 
+                    */
+                    validateUserForGlobalAdmin(params, async() => {
+                        await Handle.suspendJob(params);
+                    });
+                    break;
+                }
                 case 'total_users':
                     validateUserForDataReadAPI(params, 'core', countlyApi.data.fetch.fetchTotalUsersObj, params.qstring.metric || 'users');
                     break;
@@ -2495,6 +2838,7 @@ const processRequest = (params) => {
                     validateUserForDataReadAPI(params, 'core', countlyApi.data.fetch.fetchCountries);
                     break;
                 case 'sessions':
+                    //takes also bucket=daily || monthly. extends period to full months if monthly
                     validateUserForDataReadAPI(params, 'core', countlyApi.data.fetch.fetchSessions);
                     break;
                 case 'metric':
@@ -2513,6 +2857,7 @@ const processRequest = (params) => {
                     validateUserForDataReadAPI(params, 'core', countlyApi.data.fetch.fetchDurations);
                     break;
                 case 'events':
+                    //takes also bucket=daily || monthly. extends period to full months if monthly
                     validateUserForDataReadAPI(params, 'core', countlyApi.data.fetch.fetchEvents);
                     break;
                 default:
@@ -2524,7 +2869,7 @@ const processRequest = (params) => {
                         validateUserForDataWriteAPI: validateUserForDataWriteAPI,
                         validateUserForGlobalAdmin: validateUserForGlobalAdmin
                     })) {
-                        common.returnMessage(params, 400, 'Invalid path, must be one of /dashboard or /countries');
+                        common.returnMessage(params, 400, 'Invalid path, must be one of /dashboard,  /countries, /sessions, /metric, /tops, /loyalty, /frequency, /durations, /events');
                     }
                     break;
                 }
@@ -2592,8 +2937,111 @@ const processRequest = (params) => {
 
                 break;
             }
+            case '/i/sdk': {
+                params.ip_address = params.qstring.ip_address || common.getIpAddress(params.req);
+                params.user = {};
+
+                if (!params.qstring.app_key || !params.qstring.device_id) {
+                    common.returnMessage(params, 400, 'Missing parameter "app_key" or "device_id"');
+                    return false;
+                }
+                else {
+                    params.qstring.device_id += "";
+                    params.app_user_id = common.crypto.createHash('sha1')
+                        .update(params.qstring.app_key + params.qstring.device_id + "")
+                        .digest('hex');
+                }
+
+                log.d('processing request %j', params.qstring);
+
+                params.promises = [];
+
+                validateAppForFetchAPI(params, () => { });
+
+                break;
+            }
             case '/o/notes': {
                 validateUserForDataReadAPI(params, 'core', countlyApi.mgmt.users.fetchNotes);
+                break;
+            }
+            case '/o/cms': {
+                switch (paths[3]) {
+                case 'entries':
+                    validateUserForMgmtReadAPI(countlyApi.mgmt.cms.getEntries, params);
+                    break;
+                }
+                break;
+            }
+            case '/i/cms': {
+                switch (paths[3]) {
+                case 'save_entries':
+                    validateUserForWrite(params, countlyApi.mgmt.cms.saveEntries);
+                    break;
+                case 'clear':
+                    validateUserForWrite(countlyApi.mgmt.cms.clearCache, params);
+                    break;
+                default:
+                    if (!plugins.dispatch(apiPath, {
+                        params: params,
+                        validateUserForDataReadAPI: validateUserForDataReadAPI,
+                        validateUserForMgmtReadAPI: validateUserForMgmtReadAPI,
+                        paths: paths,
+                        validateUserForDataWriteAPI: validateUserForDataWriteAPI,
+                        validateUserForGlobalAdmin: validateUserForGlobalAdmin
+                    })) {
+                        common.returnMessage(params, 400, 'Invalid path, must be one of /save_entries or /clear');
+                    }
+                    break;
+                }
+                break;
+            }
+            case '/o/date_presets': {
+                switch (paths[3]) {
+                case 'getAll':
+                    validateUserForMgmtReadAPI(countlyApi.mgmt.datePresets.getAll, params);
+                    break;
+                case 'getById':
+                    validateUserForMgmtReadAPI(countlyApi.mgmt.datePresets.getById, params);
+                    break;
+                default:
+                    if (!plugins.dispatch(apiPath, {
+                        params: params,
+                        validateUserForDataReadAPI: validateUserForDataReadAPI,
+                        validateUserForMgmtReadAPI: validateUserForMgmtReadAPI,
+                        paths: paths,
+                        validateUserForDataWriteAPI: validateUserForDataWriteAPI,
+                        validateUserForGlobalAdmin: validateUserForGlobalAdmin
+                    })) {
+                        common.returnMessage(params, 400, 'Invalid path, must be one of /getAll /getById');
+                    }
+                    break;
+                }
+                break;
+            }
+            case '/i/date_presets': {
+                switch (paths[3]) {
+                case 'create':
+                    validateUserForWrite(params, countlyApi.mgmt.datePresets.create);
+                    break;
+                case 'update':
+                    validateUserForWrite(params, countlyApi.mgmt.datePresets.update);
+                    break;
+                case 'delete':
+                    validateUserForWrite(params, countlyApi.mgmt.datePresets.delete);
+                    break;
+                default:
+                    if (!plugins.dispatch(apiPath, {
+                        params: params,
+                        validateUserForDataReadAPI: validateUserForDataReadAPI,
+                        validateUserForMgmtReadAPI: validateUserForMgmtReadAPI,
+                        paths: paths,
+                        validateUserForDataWriteAPI: validateUserForDataWriteAPI,
+                        validateUserForGlobalAdmin: validateUserForGlobalAdmin
+                    })) {
+                        common.returnMessage(params, 400, 'Invalid path, must be one of /create /update or /delete');
+                    }
+                    break;
+                }
                 break;
             }
             default:
@@ -2648,16 +3096,12 @@ const processRequestData = (params, app, done) => {
         var update = {};
         //check if we already processed app users for this request
         if (params.app_user.last_req !== params.request_hash && ob.updates.length) {
-            ob.updates.push({$set: {last_req: params.request_hash, ingested: false}});
             for (let i = 0; i < ob.updates.length; i++) {
                 update = common.mergeQuery(update, ob.updates[i]);
             }
         }
         var newUser = params.app_user.fs ? false : true;
         common.updateAppUser(params, update, function() {
-            if (!plugins.getConfig("api", params.app && params.app.plugins, true).safe && !params.res.finished) {
-                common.returnMessage(params, 200, 'Success');
-            }
             if (params.qstring.begin_session) {
                 plugins.dispatch("/session/retention", {
                     params: params,
@@ -2687,10 +3131,6 @@ const processRequestData = (params, app, done) => {
                             break;
                         }
                     }
-                }
-                if (!retry && plugins.getConfig("api", params.app && params.app.plugins, true).safe) {
-                    //acknowledge data ingestion
-                    common.updateAppUser(params, {$set: {ingested: true}});
                 }
                 if (!params.res.finished) {
                     if (retry) {
@@ -2753,7 +3193,7 @@ const processBulkRequest = (i, requests, params) => {
     const appKey = params.qstring.app_key;
     if (i === requests.length) {
         common.unblockResponses(params);
-        if (plugins.getConfig("api", params.app && params.app.plugins, true).safe && !params.res.finished) {
+        if ((params.qstring.safe_api_response || plugins.getConfig("api", params.app && params.app.plugins, true).safe) && !params.res.finished) {
             common.returnMessage(params, 200, 'Success');
         }
         return;
@@ -2762,9 +3202,10 @@ const processBulkRequest = (i, requests, params) => {
     if (!requests[i] || (!requests[i].app_key && !appKey)) {
         return processBulkRequest(i + 1, requests, params);
     }
-
+    if (params.qstring.safe_api_response) {
+        requests[i].safe_api_response = true;
+    }
     params.req.body = JSON.stringify(requests[i]);
-
     const tmpParams = {
         'app_id': '',
         'app_cc': '',
@@ -2779,7 +3220,8 @@ const processBulkRequest = (i, requests, params) => {
         'req': params.req,
         'promises': [],
         'bulk': true,
-        'populator': params.qstring.populator
+        'populator': params.qstring.populator,
+        'blockResponses': true
     };
 
     tmpParams.qstring.app_key = (requests[i].app_key || appKey) + "";
@@ -2827,7 +3269,13 @@ const checksumSaltVerification = (params) => {
         payloads.push(params.href.substr(params.fullPath.length + 1));
 
         if (params.req.method.toLowerCase() === 'post') {
-            payloads.push(params.req.body);
+            // Check if we have 'multipart/form-data'
+            if (params.formDataUrl) {
+                payloads.push(params.formDataUrl);
+            }
+            else {
+                payloads.push(params.req.body);
+            }
         }
         if (typeof params.qstring.checksum !== "undefined") {
             for (let i = 0; i < payloads.length; i++) {
@@ -2927,13 +3375,13 @@ function validateRedirect(ob) {
                 log.e("Redirect error", error, body, opts, app, params);
             }
 
-            if (plugins.getConfig("api", params.app && params.app.plugins, true).safe) {
+            if (plugins.getConfig("api", params.app && params.app.plugins, true).safe || params.qstring?.safe_api_response) {
                 common.returnMessage(params, code, message);
             }
         });
         params.cancelRequest = "Redirected: " + app.redirect_url;
         params.waitForResponse = false;
-        if (plugins.getConfig("api", params.app && params.app.plugins, true).safe) {
+        if (plugins.getConfig("api", params.app && params.app.plugins, true).safe || params.qstring?.safe_api_response) {
             params.waitForResponse = true;
         }
         return false;
@@ -2989,7 +3437,7 @@ const validateAppForWriteAPI = (params, done, try_times) => {
 
         var time = Date.now().valueOf();
         time = Math.round((time || 0) / 1000);
-        if (params.app && (!params.app.last_data || params.app.last_data < time - 60 * 60 * 24)) { //update if more than day passed
+        if (params.app && (!params.app.last_data || params.app.last_data < time - 60 * 60 * 24) && !params.populator && !params.qstring.populator) { //update if more than day passed
             //set new value
             common.db.collection("apps").update({"_id": common.db.ObjectID(params.app._id)}, {"$set": {"last_data": time}}, function(err1) {
                 if (err1) {
@@ -3017,13 +3465,17 @@ const validateAppForWriteAPI = (params, done, try_times) => {
 
             let payload = params.href.substr(3) || "";
             if (params.req.method.toLowerCase() === 'post') {
-                payload += params.req.body;
+                payload += "&" + params.req.body;
             }
+            //remove dynamic parameters
+            payload = payload.replace(new RegExp("[?&]?(rr=[^&\n]+)", "gm"), "");
+            payload = payload.replace(new RegExp("[?&]?(checksum=[^&\n]+)", "gm"), "");
+            payload = payload.replace(new RegExp("[?&]?(checksum256=[^&\n]+)", "gm"), "");
             params.request_hash = common.crypto.createHash('sha1').update(payload).digest('hex') + (params.qstring.timestamp || params.time.mstimestamp);
             if (plugins.getConfig("api", params.app && params.app.plugins, true).prevent_duplicate_requests) {
                 //check unique millisecond timestamp, if it is the same as the last request had,
                 //then we are having duplicate request, due to sudden connection termination
-                if (params.app_user.last_req === params.request_hash && (!plugins.getConfig("api", params.app && params.app.plugins, true).safe || params.app_user.ingested)) {
+                if (params.app_user.last_req === params.request_hash) {
                     params.cancelRequest = "Duplicate request";
                 }
             }

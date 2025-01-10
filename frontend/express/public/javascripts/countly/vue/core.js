@@ -82,21 +82,38 @@
         }
     };
 
+    /**
+    * This function returns an authentication mixin object for a given feature or array of features.
+    * @param {string|array} featureName - The name of the feature(s) to create the authentication mixin for
+    * @returns {object} - Returns an object containing computed properties for authentication.
+    */
     var authMixin = function(featureName) {
+        if (!Array.isArray(featureName)) {
+            featureName = [featureName];
+        }
+        var checkAuthArray = function(func) {
+            for (var i = 0; i < featureName.length; i++) {
+                if (func(featureName[i])) {
+                    return true;
+                }
+            }
+            return false;
+        };
         return {
             // uses computed mainly to prevent mutations of these values
+            // using helper function checkAuthArray to act as a 'or' returns true if atleast one feature is validated else false
             computed: {
                 canUserCreate: function() {
-                    return countlyAuth.validateCreate(featureName);
+                    return checkAuthArray(countlyAuth.validateCreate);
                 },
                 canUserRead: function() {
-                    return countlyAuth.validateRead(featureName);
+                    return checkAuthArray(countlyAuth.validateRead);
                 },
                 canUserUpdate: function() {
-                    return countlyAuth.validateUpdate(featureName);
+                    return checkAuthArray(countlyAuth.validateUpdate);
                 },
                 canUserDelete: function() {
-                    return countlyAuth.validateDelete(featureName);
+                    return checkAuthArray(countlyAuth.validateDelete);
                 },
                 isUserGlobalAdmin: function() {
                     return countlyAuth.validateGlobalAdmin();
@@ -120,7 +137,8 @@
             formatTimeAgo: countlyCommon.formatTimeAgo,
             formatNumber: countlyCommon.formatNumber,
             formatNumberSafe: countlyCommon.formatNumberSafe,
-            getShortNumber: countlyCommon.getShortNumber
+            getShortNumber: countlyCommon.getShortNumber,
+            unescapeHtml: countlyCommon.unescapeHtml
         }
     };
 
@@ -255,6 +273,16 @@
                     return {xAxis: {data: labels}, series: [{"name": metricName, "data": series, stack: "A"}]};
                 }
             },
+            calculateStackedBarTimeSeriesOptionsFromWidget: function(widgetData) {
+                widgetData = widgetData || {};
+                widgetData.dashData = widgetData.dashData || {};
+                widgetData.dashData.data = widgetData.dashData.data || {};
+                widgetData.metrics = widgetData.metrics || [];
+
+                for (var app in widgetData.dashData.data) {
+                    return widgetData.dashData.data[app];
+                }
+            },
             calculatePieGraphFromWidget: function(widgetData, namingMap) {
                 widgetData = widgetData || {};
                 widgetData.metrics = widgetData.metrics || [];
@@ -349,6 +377,7 @@
                     activeApp: null,
                     allApps: countlyGlobal.apps,
                     notificationToasts: [],
+                    persistentNotifications: [],
                     dialogs: []
                 },
                 getters: {
@@ -376,7 +405,17 @@
                         return state.dialogs.filter(function(item) {
                             return item.intent === "message";
                         });
-                    }
+                    },
+                    blockerDialogs: function(state) {
+                        return state.dialogs.filter(function(item) {
+                            return item.intent === "blocker";
+                        });
+                    },
+                    quickstartContent: function(state) {
+                        return state.dialogs.filter(function(item) {
+                            return item.intent === "quickstart";
+                        });
+                    },
                 },
                 mutations: {
                     setAreNotesHidden: function(state, value) {
@@ -426,6 +465,17 @@
                             return item.id !== id;
                         });
                     },
+                    addPersistentNotification: function(state, payload) {
+                        if (!payload.id) {
+                            payload.id = countlyCommon.generateId();
+                        }
+                        state.persistentNotifications.unshift(payload);
+                    },
+                    removePersistentNotification: function(state, notificationId) {
+                        state.persistentNotifications = state.persistentNotifications.filter(function(item) {
+                            return item.id !== notificationId;
+                        });
+                    },
                     addDialog: function(state, payload) {
                         payload.id = countlyCommon.generateId();
                         state.dialogs.unshift(payload);
@@ -472,6 +522,12 @@
                     },
                     onRemoveNotificationToast: function(context, payload) {
                         context.commit('removeNotificationToast', payload);
+                    },
+                    onAddPersistentNotification: function(context, payload) {
+                        context.commit('addPersistentNotification', payload);
+                    },
+                    onRemovePersistentNotification: function(context, notificationId) {
+                        context.commit('removePersistentNotification', notificationId);
                     },
                     onAddDialog: function(context, payload) {
                         context.commit('addDialog', payload);
@@ -632,7 +688,7 @@
 
     var NotificationToastsView = {
         template: '<div class="notification-toasts"> \
-                        <cly-notification v-for="(toast) in notificationToasts" :key="toast.id" :id="toast.id" :text="toast.text" :autoHide="toast.autoHide" :color="toast.color" :closable="true" @close="onClose" class="notification-toasts__item"></cly-notification>\
+                        <cly-notification v-for="(toast) in notificationToasts" :key="toast.id" :id="toast.id" :text="toast.text" :autoHide="toast.autoHide" :color="toast.color" :closable="true" :customWidth="toast.width" @close="onClose" class="notification-toasts__item"></cly-notification>\
                     </div>',
         store: _vuex.getGlobalStore(),
         computed: {
@@ -657,9 +713,12 @@
                             visible\
                             :key="dialog.id"\
                             :dialogType="dialog.type"\
+                            :test-id="dialog.testId"\
                             :saveButtonLabel="dialog.confirmLabel"\
                             :cancelButtonLabel="dialog.cancelLabel"\
-                            :title="dialog.title">\
+                            :title="dialog.title"\
+                            :show-close="dialog.showClose"\
+                            :alignCenter="dialog.alignCenter">\
                                 <template slot-scope="scope">\
                                     <div v-html="dialog.message"></div>\
                                 </template>\
@@ -668,6 +727,7 @@
                             v-for="dialog in messageDialogs"\
                             @confirm="onCloseDialog(dialog, true)"\
                             @close="onCloseDialog(dialog, false)"\
+                            :test-id="dialog.testId"\
                             visible\
                             :show-close="false"\
                             :key="dialog.id"\
@@ -678,6 +738,19 @@
                                     <div v-html="dialog.message"></div>\
                                 </template>\
                         </cly-message-dialog>\
+                        <el-dialog\
+                            v-for="dialog in blockerDialogs"\
+                            visible\
+                            :test-id="dialog.testId"\
+                            :center="dialog.center"\
+                            :width="dialog.width"\
+                            :close-on-click-modal="false"\
+                            :close-on-press-escape="false"\
+                            :show-close="false"\
+                            :key="dialog.id"\
+                            :title="dialog.title">\
+                            <div v-html="dialog.message"></div>\
+                        </el-dialog>\
                 </div>',
         store: _vuex.getGlobalStore(),
         computed: {
@@ -686,7 +759,10 @@
             },
             confirmDialogs: function() {
                 return this.$store.getters['countlyCommon/confirmDialogs'];
-            }
+            },
+            blockerDialogs: function() {
+                return this.$store.getters['countlyCommon/blockerDialogs'];
+            },
         },
         methods: {
             onCloseDialog: function(dialog, status) {
@@ -707,6 +783,36 @@
                         <NotificationToasts></NotificationToasts>\
                         <Dialogs></Dialogs>\
                     </div>'
+    };
+
+    var QuickstartPopoverView = {
+        template: '<div class="quickstart-popover-wrapper" data-test-id="quickstart-popover-wrapper">\
+            <div class="quickstart-popover-positioner" data-test-id="quickstart-popover-positioner">\
+            <el-popover\
+                v-for="content in quickstartContent"\
+                popper-class="quickstart-popover-popover"\
+                :value="!!content"\
+                :visible-arrow="false"\
+                trigger="manual"\
+                :width="content.width"\
+                :key="content.id"\
+                :title="content.title">\
+                <i class="ion-close bu-is-size-7 quickstart-popover-close" data-test-id="quickstart-popover-close" @click="handleCloseClick(content.id)"></i>\
+                <div v-html="content.message"></div>\
+            </el-popover>\
+            </div>\
+        </div>',
+        store: _vuex.getGlobalStore(),
+        computed: {
+            quickstartContent: function() {
+                return this.$store.getters['countlyCommon/quickstartContent'];
+            },
+        },
+        methods: {
+            handleCloseClick: function(dialogId) {
+                this.$store.dispatch('countlyCommon/onRemoveDialog', dialogId);
+            },
+        },
     };
 
     var countlyVueWrapperView = countlyView.extend({
@@ -758,12 +864,14 @@
                 components: {
                     DummyCompAPI: DummyCompAPI,
                     MainView: self.component,
-                    GenericPopups: GenericPopupsView
+                    GenericPopups: GenericPopupsView,
+                    QuickstartPopover: QuickstartPopoverView,
                 },
                 template: '<div>\
                                 <MainView></MainView>\
                                 <GenericPopups></GenericPopups>\
                                 <DummyCompAPI></DummyCompAPI>\
+                                <QuickstartPopover></QuickstartPopover>\
                             </div>',
                 beforeCreate: function() {
                     this.$route.params = self.params;

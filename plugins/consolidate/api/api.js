@@ -7,6 +7,9 @@ plugins.register("/sdk/pre", function(ob) {
     if (ob.params.qstring && ob.params.qstring.events) {
         ob.params.preservedEvents = JSON.stringify(ob.params.qstring.events);
     }
+    if (ob.params.qstring && ob.params.qstring.metrics) {
+        ob.params.preservedMetrics = JSON.stringify(ob.params.qstring.metrics);
+    }
     if (ob.params.qstring && ob.params.qstring.old_device_id) {
         ob.params.preservedOldId = ob.params.qstring.old_device_id;
     }
@@ -47,6 +50,7 @@ plugins.register("/i", async function(ob) {
                 data.app_key = app.key;
                 data.ip_address = ob.params.ip_address;
                 data.events = ob.params.preservedEvents ? JSON.parse(ob.params.preservedEvents) : data.events;
+                data.metrics = ob.params.preservedMetrics ? JSON.parse(ob.params.preservedMetrics) : data.metrics;
                 if (ob.params.preservedOldId) {
                     data.old_device_id = ob.params.preservedOldId;
                 }
@@ -82,4 +86,45 @@ plugins.register("/i", async function(ob) {
         console.error(e);
     }
 
+});
+
+plugins.register('/i/apps/update/plugins/consolidate', async function({app, config}) {
+    try {
+        console.log('Updating app %s config: %j', app._id, config);
+        const addedSourceApps = config.selectedApps;
+        const initialSourceApps = config.initialApps;
+
+        if (!addedSourceApps || !initialSourceApps) {
+            return "Nothing changed";
+        }
+
+        const removedSourceApps = addedSourceApps
+            .filter(x => !initialSourceApps.includes(x))
+            .concat(initialSourceApps.filter(x => !addedSourceApps.includes(x)));
+
+        // unset removed apps
+        await common.db.collection('apps').updateMany(
+            {_id: {$in: removedSourceApps.map(id => common.db.ObjectID(id))}},
+            {$pull: { 'plugins.consolidate': app._id + ""}}
+        );
+
+        // set added apps
+        await common.db.collection('apps').updateMany(
+            {_id: {$in: addedSourceApps.map(id => common.db.ObjectID(id))}},
+            {$addToSet: {'plugins.consolidate': app._id + ""}}
+        );
+
+        // get all updated app documents
+        const apps = await common.db.collection('apps').find(
+            {_id: {$in: [...addedSourceApps, ...removedSourceApps].map(id => common.db.ObjectID(id)) }}
+        ).toArray();
+
+        console.log('App %s updated successfully', app._id);
+
+        return apps;
+    }
+    catch (e) {
+        console.error(e);
+        throw new Error('Failed to update config');
+    }
 });

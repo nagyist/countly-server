@@ -14,16 +14,24 @@ var CityView = countlyVue.views.create({
     },
     mounted: function() {
         this.$store.dispatch('countlyCities/onSetRegion', this.$route.params.region);
-        this.$store.dispatch('countlyCities/fetchData');
+        this.refresh(true);
     },
     methods: {
-        refresh: function() {
-            this.$store.dispatch('countlyCities/fetchData');
+        refresh: function(force) {
+            if (force) {
+                this.$store.dispatch('countlyCities/fetchData', force);
+            }
+            else {
+                this.$store.dispatch('countlyCities/fetchData', false);
+            }
         }
     },
     computed: {
         data: function() {
             return this.$store.state.countlyCities.data;
+        },
+        dateChanged: function() {
+            this.refresh(true);
         },
         totalData: function() {
             return this.$store.state.countlyCountry.data;
@@ -33,7 +41,7 @@ var CityView = countlyVue.views.create({
 
             return [
                 {"value": "t", "label": CV.i18n('common.table.total-sessions'), "trend": totals.t.trend, "number": countlyCommon.getShortNumber(totals.t.total || 0), "trendValue": totals.t.change},
-                {"value": "u", "label": CV.i18n('common.table.total-users'), "trend": totals.u.trend, "number": countlyCommon.getShortNumber(totals.u.total || 0), "trendValue": totals.u.change},
+                {"value": "u", "label": CV.i18n('common.table.total-users'), "trend": totals.u.trend, "number": countlyCommon.getShortNumber(totals.u.total || 0), "trendValue": totals.u.change, isEstimate: totals.u.isEstimate, estimateTooltip: CV.i18n("common.estimation")},
                 {"value": "n", "label": CV.i18n('common.table.new-users'), "trend": totals.n.trend, "number": countlyCommon.getShortNumber(totals.n.total || 0), "trendValue": totals.n.change}
             ];
         },
@@ -116,11 +124,11 @@ var CountryView = countlyVue.views.create({
         };
     },
     mounted: function() {
-        this.$store.dispatch('countlyCountry/fetchData');
+        this.refresh(true);
     },
     methods: {
-        refresh: function() {
-            this.$store.dispatch('countlyCountry/fetchData');
+        refresh: function(force) {
+            this.$store.dispatch('countlyCountry/fetchData', force);
         },
         swithToCityView: function() {
             windows.location.href = this.path;
@@ -142,7 +150,7 @@ var CountryView = countlyVue.views.create({
             totals.n = totals.n || {};
             return [
                 {"value": "t", "label": CV.i18n('common.table.total-sessions'), "trend": totals.t.trend, "number": countlyCommon.getShortNumber(totals.t.total || 0), "trendValue": totals.t.change},
-                {"value": "u", "label": CV.i18n('common.table.total-users'), "trend": totals.u.trend, "number": countlyCommon.getShortNumber(totals.u.total || 0), "trendValue": totals.u.change},
+                {"value": "u", "label": CV.i18n('common.table.total-users'), "trend": totals.u.trend, "number": countlyCommon.getShortNumber(totals.u.total || 0), "trendValue": totals.u.change, isEstimate: totals.u.isEstimate, estimateTooltip: CV.i18n("common.estimation")},
                 {"value": "n", "label": CV.i18n('common.table.new-users'), "trend": totals.n.trend, "number": countlyCommon.getShortNumber(totals.n.total || 0), "trendValue": totals.n.change}
             ];
         },
@@ -165,7 +173,7 @@ var CountryView = countlyVue.views.create({
                 title = CV.i18n('common.table.new-users');
             }
             for (var k = 0; k < table.length; k++) {
-                var cc = "<img src='" + countlyGlobal.path + "/images/flags/" + table[k].code + ".png'/><p class='number'>" + table[k][selectedProperty] + "</p><p>" + title + "</p>";
+                var cc = "<img src='" + countlyGlobal.path + "/images/flags/" + (table[k].code || "unknown") + ".png'/><p class='number'>" + table[k][selectedProperty] + "</p><p>" + title + "</p>";
                 geoChart.push([{"v": table[k].country, "f": table[k].countryTranslated}, table[k][selectedProperty], cc]);
             }
             return geoChart;
@@ -183,7 +191,7 @@ var CountryView = countlyVue.views.create({
 
             this.data.table = this.data.table || [];
             for (var z = 0; z < this.data.table.length; z++) {
-                this.data.table[z].flag = countlyGlobal.path + "/images/flags/" + this.data.table[z].code + ".svg";
+                this.data.table[z].flag = countlyGlobal.path + "/images/flags/" + (this.data.table[z].code || "unknown") + ".svg";
             }
             return this.data.table;
         },
@@ -262,6 +270,9 @@ var CountriesHomeWidget = countlyVue.views.create({
                 return CV.i18n('common.table.new-users');
             }
         },
+        isLoading: function() {
+            return this.$store.state.countlyCountry.isLoading;
+        }
     },
     data: function() {
         var buttonText = "";
@@ -297,15 +308,15 @@ var CountriesHomeWidget = countlyVue.views.create({
     },
     mounted: function() {
         var self = this;
-        this.$store.dispatch('countlyCountry/fetchData').then(function() {
+        this.$store.dispatch('countlyCountry/fetchData', true).then(function() {
             self.chooseProperties = self.calculateProperties();
             self.countriesData = self.calculateCountriesData();
         });
     },
     methods: {
-        refresh: function() {
+        refresh: function(force) {
             var self = this;
-            this.$store.dispatch('countlyCountry/fetchData').then(function() {
+            this.$store.dispatch('countlyCountry/fetchData', force).then(function() {
                 self.chooseProperties = self.calculateProperties();
                 self.countriesData = self.calculateCountriesData();
             });
@@ -327,7 +338,7 @@ var CountriesHomeWidget = countlyVue.views.create({
             totals.n = totals.n || {};
             return [
                 {"value": "t", "label": CV.i18n('common.table.total-sessions'), "trend": totals.t.trend || "u", "number": countlyCommon.getShortNumber(totals.t.total || 0), "trendValue": totals.t.change || "NaN"},
-                {"value": "u", "label": CV.i18n('common.table.total-users'), "trend": totals.t.trend || "u", "number": countlyCommon.getShortNumber(totals.u.total || 0), "trendValue": totals.u.change || "NaN"},
+                {"value": "u", "label": CV.i18n('common.table.total-users'), "trend": totals.t.trend || "u", "number": countlyCommon.getShortNumber(totals.u.total || 0), "trendValue": totals.u.change || "NaN", isEstimate: totals.u.isEstimate, estimateTooltip: CV.i18n("common.estimation")},
                 {"value": "n", "label": CV.i18n('common.table.new-users'), "trend": totals.t.trend || "u", "number": countlyCommon.getShortNumber(totals.n.total || 0), "trendValue": totals.n.change || "NaN"}
             ];
         },
@@ -408,6 +419,7 @@ countlyVue.container.registerTab("/analytics/geo", {
     title: CV.i18n('sidebar.analytics.countries'),
     route: "#/analytics/geo/countries",
     component: CountryView,
+    dataTestId: "countries",
     vuex: [{
         clyModel: countlyCountry
     }]

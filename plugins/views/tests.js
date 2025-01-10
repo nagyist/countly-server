@@ -5,6 +5,7 @@ request = request.agent(testUtils.url);
 var APP_KEY = "";
 var API_KEY_ADMIN = "";
 var APP_ID = "";
+var crypto = require('crypto');
 //var DEVICE_ID = "1234567890";
 
 //add data
@@ -13,12 +14,14 @@ var APP_ID = "";
 //recalculate
 var myTime = Date.now();
 var start = new Date(new Date().getFullYear(), 0, 0);
+var startMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 0);
 
 var tableResponse = {};
 var userObject = {};
 var viewsListed = [];
 
 var graphResponse = {};
+var db;
 
 tableResponse.hour = {"iTotalRecords": 0, "iTotalDisplayRecords": 0, "aaData": [{"u": 0, "t": 0, "s": 0, "b": 0, "e": 0, "d-calc": 0, "d": 0, "n": 0, "scr-calc": 0, "scr": 0, "uvalue": 0}]};
 tableResponse.yesterday = {"iTotalRecords": 0, "iTotalDisplayRecords": 0, "aaData": [{"u": 0, "t": 0, "s": 0, "b": 0, "e": 0, "d-calc": 0, "d": 0, "n": 0, "scr-calc": 0, "scr": 0, "uvalue": 0}]};
@@ -26,12 +29,14 @@ tableResponse["30days"] = {"iTotalRecords": 0, "iTotalDisplayRecords": 0, "aaDat
 tableResponse["7days"] = {"iTotalRecords": 0, "iTotalDisplayRecords": 0, "aaData": [{"u": 0, "t": 0, "s": 0, "b": 0, "e": 0, "d-calc": 0, "d": 0, "n": 0, "scr-calc": 0, "scr": 0, "uvalue": 0}]};
 tableResponse.month = {"iTotalRecords": 0, "iTotalDisplayRecords": 0, "aaData": [{"u": 0, "t": 0, "s": 0, "b": 0, "e": 0, "d-calc": 0, "d": 0, "n": 0, "scr-calc": 0, "scr": 0, "uvalue": 0}]}; //this year
 
+var userHistory = {};
 
 graphResponse.hour = {};
 graphResponse.yesterday = {};
 graphResponse["30days"] = {};
 
 var days_this_year;
+var days_this_month;
 
 function pushValues(period, index, map) {
     for (var key in map) {
@@ -241,10 +246,13 @@ describe('Testing views plugin', function() {
     describe('verify empty views tables', function() {
         it('should have 0 views', function(done) {
             days_this_year = Math.floor((myTime - start) / (1000 * 24 * 60 * 60));
-            console.log("days left in this year:" + days_this_year);
+            days_this_month = Math.floor((myTime - startMonth) / (1000 * 24 * 60 * 60));
+            console.log("days gone in this month:" + days_this_month);
+            console.log("days gone in this year:" + days_this_year);
             API_KEY_ADMIN = testUtils.get("API_KEY_ADMIN");
             APP_ID = testUtils.get("APP_ID");
             APP_KEY = testUtils.get("APP_KEY");
+            db = testUtils.client.db("countly");
             request
                 .get('/o?api_key=' + API_KEY_ADMIN + '&app_id=' + APP_ID + '&method=views&action=getTable&period=30days')
                 .expect(200)
@@ -270,11 +278,14 @@ describe('Testing views plugin', function() {
             tableResponse["30days"].iTotalRecords += 1;
             tableResponse["30days"].iTotalDisplayRecords += 1;
             pushValues("30days", 0, {"u": 1, "t": 1, "s": 1, "uvalue": 1, "n": 1, "view": "testview0"});
+            userHistory["user1"] = {};
+            userHistory["user1"]["30days"] = true;
 
             if (days_this_year > 25) {
                 tableResponse.month.iTotalRecords += 1;
                 tableResponse.month.iTotalDisplayRecords += 1;
                 pushValues("month", 0, {"t": 1, "s": 1, "uvalue": 1, "u": 1, "n": 1, "view": "testview0"});
+                userHistory["user1"]["month"] = true;
             }
             /* else {
                 tableResponse.month.iTotalRecords = 0;
@@ -300,8 +311,12 @@ describe('Testing views plugin', function() {
             tableResponse.yesterday.iTotalRecords += 1;
             tableResponse.yesterday.iTotalDisplayRecords += 1;
             pushValues("yesterday", 0, {"u": 1, "t": 1, "s": 1, "uvalue": 1, "view": "testview0"});
-
-            pushValues("30days", 0, {"u": 1, "t": 1, "s": 1});
+            if (days_this_month < 2) {
+                pushValues("30days", 0, {"u": 1, "t": 1, "s": 1});
+            }
+            else {
+                pushValues("30days", 0, {"u": 1, "t": 1, "s": 1, "uvalue": 1});
+            }
 
             tableResponse["7days"].iTotalRecords += 1;
             tableResponse["7days"].iTotalDisplayRecords += 1;
@@ -310,7 +325,13 @@ describe('Testing views plugin', function() {
             if (days_this_year > 1) {
                 tableResponse.month.iTotalRecords = 1;
                 tableResponse.month.iTotalDisplayRecords = 1;
-                pushValues("month", 0, {"t": 1, "s": 1});
+                if (userHistory["user1"]["month"]) {
+                    pushValues("month", 0, {"t": 1, "s": 1});
+                }
+                else {
+                    pushValues("month", 0, {"u": 1, "uvalue": 1, "t": 1, "s": 1, "view": "testview0"});
+                    userHistory["user1"]["month"] = true;
+                }
                 //tableResponse["month"]['aaData'][0]['n']=1;
                 tableResponse.month.aaData[0].uvalue = 1;
             }
@@ -336,7 +357,13 @@ describe('Testing views plugin', function() {
             tableResponse.hour.iTotalRecords += 1;
             tableResponse.hour.iTotalDisplayRecords += 1;
             pushValues("hour", 0, {"u": 1, "t": 1, "s": 1, "uvalue": 1});
-            pushValues("30days", 0, {"u": 1, "t": 1, "s": 1});
+
+            if (days_this_month > 1) {
+                pushValues("30days", 0, {"u": 1, "t": 1, "s": 1});
+            }
+            else {
+                pushValues("30days", 0, {"u": 1, "t": 1, "s": 1, "uvalue": 1});
+            }
 
             tableResponse.month.iTotalRecords = 1;
             tableResponse.month.iTotalDisplayRecords = 1;
@@ -575,9 +602,27 @@ describe('Testing views plugin', function() {
         verifyTotals("30days");
     });
 
+    var check_if_merges_finished = function(tries, done) {
+        if (tries == 3) {
+            done();
+        }
+        else {
+            testUtils.db.collection("app_user_merges").find({"_id": {"$regex": "^" + APP_ID}}).toArray(function(err, res) {
+                if (res && res.length > 0) {
+                    console.log(JSON.stringify(res));
+                    setTimeout(function() {
+                        check_if_merges_finished(tries + 1, done);
+                    }, 10000);
+                }
+                else {
+                    done();
+                }
+            });
+        }
+    };
+
     describe('Validating user merging', function() {
         it('getting Info about users', function(done) {
-
             testUtils.db.collection("app_userviews" + APP_ID).aggregate([{$lookup: {from: "app_users" + APP_ID, localField: "_id", foreignField: "uid", as: "userinfo"}}], function(err, res) {
                 for (var k = 0; k < res.length; k++) {
                     if (res[k].userinfo && res[k].userinfo[0]) {
@@ -604,6 +649,9 @@ describe('Testing views plugin', function() {
                     setTimeout(done, 1000 * testUtils.testScalingFactor);
                 });
 
+        });
+        it('making sure merge is finished', function(done) {
+            check_if_merges_finished(0, done);
         });
 
         it('validating result', function(done) {
@@ -639,6 +687,9 @@ describe('Testing views plugin', function() {
                     setTimeout(done, 3000 * testUtils.testScalingFactor);
                 });
 
+        });
+        it('making sure merge is finished', function(done) {
+            check_if_merges_finished(0, done);
         });
 
         it('validating result', function(done) {
@@ -676,6 +727,9 @@ describe('Testing views plugin', function() {
                 });
 
         });
+        it('making sure merge is finished', function(done) {
+            check_if_merges_finished(0, done);
+        });
 
         it('validating result', function(done) {
             testUtils.db.collection("app_userviews" + APP_ID).aggregate([{$lookup: {from: "app_users" + APP_ID, localField: "_id", foreignField: "uid", as: "userinfo"}}], function(err, res) {
@@ -686,12 +740,47 @@ describe('Testing views plugin', function() {
                         delete res[k].userinfo;
                     }
                 }
-                if (compareObjects(userObject2, userObject)) {
-                    done();
+                if (Object.keys(userObject2).length === 0) {
+                    console.log('refetching...');
+                    //try refetching in few seconds
+                    setTimeout(function() {
+                        testUtils.db.collection("app_userviews" + APP_ID).aggregate([
+                            { $replaceRoot: { newRoot: { _id: "$_id", "data": "$$ROOT"}}},
+                            {"$unionWith": {"coll": "app_users" + APP_ID, "pipeline": [{"$project": {"_id": "$uid", "userinfo": "$$ROOT"}}]}},
+                            {"$group": {"_id": "$_id", "userinfo": {"$addToSet": "$userinfo"}, "data": {"$addToSet": "$data"}}},
+                            {"$project": {"_id": 1, "userinfo": "$userinfo", "data": {"$first": "$data"}}}
+                        ], function(err, res) {
+                            var userObject2 = {};
+                            console.log(JSON.stringify(res));
+                            for (var k = 0; k < res.length; k++) {
+                                if (res[k].userinfo && res[k].userinfo[0]) {
+                                    userObject2[res[k].userinfo[0].did] = res[k].data;
+                                    delete res[k].userinfo;
+                                }
+                            }
+                            if (compareObjects(userObject2, userObject)) {
+                                done();
+
+                            }
+                            else {
+                                console.log(JSON.stringify(userObject2));
+                                console.log(JSON.stringify(userObject));
+                                done("Invalid merging users ");
+                            }
+                        });
+                    }, 20000);
 
                 }
                 else {
-                    done("Invalid merging users ");
+                    if (compareObjects(userObject2, userObject)) {
+                        done();
+
+                    }
+                    else {
+                        console.log(JSON.stringify(userObject2));
+                        console.log(JSON.stringify(userObject));
+                        done("Invalid merging users ");
+                    }
                 }
             });
         });
@@ -1043,13 +1132,164 @@ describe('Testing views plugin', function() {
             verifyTotals("month");
             verifyTotals("7days");
         });
-
-
-
-
     });
 
+    describe('Adding views with UTM segments', function() {
+        it('adding new view', function(done) {
+            tableResponse.hour.iTotalRecords = 1;
+            tableResponse.hour.iTotalDisplayRecords = 1;
+            pushValues("hour", 0, {"u": 1, "t": 1, "s": 1, "uvalue": 1, "n": 1, "view": "testview3"});
 
+            var data = JSON.stringify([{"key": "[CLY]_view", "count": 1, "segmentation": {"name": "testview3", "visit": 1, "start": 1, "only_saved_param": "saved", "utm_source": "test_source", "utm_medium": "test_medium", "utm_campaign": "test_campaign", "utm_term": "test_term", "utm_content": "test_content", "referrer": "test_referrer"}}]);
+
+            request
+                .get('/i?app_key=' + APP_KEY + '&device_id=' + "user1" + '&timestamp=' + (myTime) + '&events=' + data)
+                .expect(200)
+                .end(function(err, res) {
+                    setTimeout(done, 1000 * testUtils.testScalingFactor);
+                });
+        });
+
+        verifyTotals("hour");
+
+        describe('Verify UTM segments are not recorded in views', function() {
+            verifySegments({ "segments": { "only_saved_param": "saved" }, "domains": []});
+        });
+    });
+
+    describe('Test omiting segments', function() {
+        describe('sending data', function() {
+            it('adding view with some custom segment', function(done) {
+                var data = JSON.stringify([{"key": "[CLY]_view", "count": 1, "segmentation": {"name": "testOmit", "visit": 1, "start": 1, "omitMe": "someValue"}}]);
+                request
+                    .get('/i?app_key=' + APP_KEY + '&device_id=' + "userOmit" + '&timestamp=' + myTime + '&events=' + data)
+                    .expect(200)
+                    .end(function(err, res) {
+                        setTimeout(done, 1000 * testUtils.testScalingFactor);
+                    });
+
+            });
+        });
+        describe("verifying data", function() {
+            verifySegments({"segments": {"omitMe": ["someValue"]}, "domains": []});
+            it('checking database structures', function(done) {
+                db.collection("views").findOne({"_id": db.ObjectID(APP_ID)}, function(err, res) {
+                    if (err) {
+                        done(err);
+                    }
+                    else {
+                        //res.should.have.property("omit", ["omitMe"]);
+                        //check if there is collection with any doc for this segmentation
+                        var colName2 = "app_viewdata" + crypto.createHash('sha1').update("omitMe" + APP_ID).digest('hex');
+                        db.collection(colName2).findOne({}, function(err, res) {
+                            if (res) {
+                                done();
+                            }
+                            else {
+                                done("mising data in collection");
+                            }
+                        });
+                    }
+
+                });
+            });
+        });
+        describe('testing omiting endpoint', function() {
+            it('Testing omit endpoint without APP_ID', function(done) {
+                request
+                    .get('/i/views?method=omit_segments&api_key=' + API_KEY_ADMIN + "&omit_list=" + JSON.stringify(["omitMe"]))
+                    .expect(400)
+                    .end(function(err, res) {
+                        if (err) {
+                            return done(err);
+                        }
+                        else {
+                            done();
+                        }
+                    });
+            });
+        });
+        describe('testing valid omit request', function() {
+            it('omiting segment', function(done) {
+                request
+                    .get('/i/views?method=omit_segments&app_id=' + APP_ID + '&api_key=' + API_KEY_ADMIN + "&omit_list=" + JSON.stringify(["omitMe"]))
+                    .expect(200)
+                    .end(function(err, res) {
+                        console.log(err);
+                        console.log(res.text);
+                        if (err) {
+                            return done(err);
+                        }
+                        var ob = JSON.parse(res.text);
+                        ob.should.have.property('result', 'Success');
+                        setTimeout(done, 500 * testUtils.testScalingFactor);
+                    });
+            });
+        });
+
+        describe("checking if structures are correct", function() {
+            verifySegments({"segments": {}, "domains": [], "omit": ["omitMe"]});
+            it('checking database structures', function(done) {
+                db.collection("views").findOne({"_id": db.ObjectID(APP_ID)}, function(err, res) {
+                    if (err) {
+                        done(err);
+                    }
+                    else {
+                        res.should.have.property("omit", ["omitMe"]);
+                        //check if there is collection with any doc for this segmentation
+                        var colName2 = "app_viewdata" + crypto.createHash('sha1').update("omitMe" + APP_ID).digest('hex');
+                        db.collection(colName2).findOne({}, function(err, res) {
+                            if (res) {
+                                done("data is still in collection. Although it should be cleared out.");
+                            }
+                            else {
+                                done();
+                            }
+                        });
+                    }
+
+                });
+            });
+        });
+
+        describe('test if incoming data is omited', function() {
+            it('adding view with some custom segment', function(done) {
+                var data = JSON.stringify([{"key": "[CLY]_view", "count": 1, "segmentation": {"name": "testOmit", "visit": 1, "start": 1, "omitMe": "someValue"}}]);
+                request
+                    .get('/i?app_key=' + APP_KEY + '&device_id=' + "userOmit2" + '&timestamp=' + myTime + '&events=' + data)
+                    .expect(200)
+                    .end(function(err, res) {
+                        setTimeout(done, 1000 * testUtils.testScalingFactor);
+                    });
+
+            });
+        });
+        describe("checking if structures are correct", function() {
+            verifySegments({"segments": {}, "domains": [], "omit": ["omitMe"]});
+            it('checking database structures', function(done) {
+                db.collection("views").findOne({"_id": db.ObjectID(APP_ID)}, function(err, res) {
+                    if (err) {
+                        done(err);
+                    }
+                    else {
+                        res.should.have.property("omit", ["omitMe"]);
+                        //check if there is collection with any doc for this segmentation
+                        var colName2 = "app_viewdata" + crypto.createHash('sha1').update("omitMe" + APP_ID).digest('hex');
+                        db.collection(colName2).findOne({}, function(err, res) {
+                            if (res) {
+                                done("data is in collection. Although it should be cleared out.");
+                            }
+                            else {
+                                done();
+                            }
+                        });
+                    }
+
+                });
+            });
+        });
+
+    });
 
     describe('reset app', function() {
         it('should reset data', function(done) {

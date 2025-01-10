@@ -1,4 +1,4 @@
-/*global moment, countlyVue, app, countlyLogger, countlyCommon, CV, countlyGlobal */
+/*global moment, countlyVue, app, countlyLogger, countlyCommon, CV */
 (function() {
     var isSecondFormat = (Math.round(parseFloat(this.timestamp)) + "").length === 10;
 
@@ -82,7 +82,6 @@
                 switch: true,
                 isTablePaused: true,
                 logsData: [],
-                autoRefresh: false,
                 isLoading: false,
                 isTurnedOff: false,
                 appId: countlyCommon.ACTIVE_APP_ID,
@@ -128,30 +127,90 @@
             })
         ],
         methods: {
-            getExportQuery: function() {
-                /*var projection = {};
-                this.$refs.requestLogTable.exportColumns.forEach(function(col) {
-                    projection[col] = true;
-                });*/
-                var apiQueryData = {
-                    api_key: countlyGlobal.member.api_key,
-                    db: 'countly',
-                    collection: 'logs' + countlyCommon.ACTIVE_APP_ID,
-                    //query: this.$store.getters["countlyUsers/query"] || "{}",
-                    limit: '',
-                    skip: 0,
-                    //projection: JSON.stringify(projection)
+            formatExportFunction: function() {
+                var tableData = this.logsData;
+                var table = [];
+                var sanitizeQueryData = function(data) {
+                    try {
+                        // If data is already a string, parse it first
+                        let queryObject = typeof data === 'string' ? JSON.parse(data) : data;
+
+                        // Handle nested JSON strings within the object
+                        Object.keys(queryObject).forEach(key => {
+                            if (typeof queryObject[key] === 'string') {
+                                // Try to parse if it looks like JSON
+                                if (queryObject[key].startsWith('{') || queryObject[key].startsWith('[')) {
+                                    try {
+                                        queryObject[key] = JSON.parse(queryObject[key]);
+                                        if (typeof queryObject[key] === 'object' && queryObject[key] !== null) {
+                                            queryObject[key] = sanitizeQueryData(queryObject[key]);
+                                        }
+                                    }
+                                    catch (e) {
+                                        // If parsing fails, keep decoded string
+                                    }
+                                }
+                                queryObject[key] = countlyCommon.unescapeHtml(queryObject[key]);
+                            }
+                            else if (typeof queryObject[key] === 'object' && queryObject[key] !== null) {
+                                // Recursively handle nested objects
+                                Object.keys(queryObject[key]).forEach(nestedKey => {
+                                    if (typeof queryObject[key][nestedKey] === 'string') {
+                                        queryObject[key][nestedKey] = countlyCommon.unescapeHtml(queryObject[key][nestedKey]);
+                                    }
+                                });
+                            }
+                        });
+                        return JSON.stringify(queryObject);
+                    }
+                    catch (err) {
+                        return data; // Return original data if processing fails
+                    }
                 };
-                return apiQueryData;
+
+                for (var i = 0; i < tableData.length; i++) {
+                    var item = {};
+                    item[CV.i18n('logger.requests').toUpperCase()] = countlyCommon.formatTimeAgoText(tableData[i].reqts).text;
+                    if (tableData[i].d && tableData[i].d.p && tableData[i].d.pv) {
+                        item[CV.i18n('logger.platform').toUpperCase()] = tableData[i].d.p + "(" + tableData[i].d.pv + ")";
+                    }
+                    if (tableData[i].v) {
+                        item[CV.i18n('logger.version').toUpperCase()] = tableData[i].d.v;
+                    }
+                    if (tableData[i].d && tableData[i].d.id) {
+                        item[CV.i18n('logger.device-id').toUpperCase()] = tableData[i].d.id;
+                    }
+
+                    if (tableData[i].l && tableData[i].l.cc && tableData[i].l.cty) {
+                        item[CV.i18n('logger.location').toUpperCase()] = tableData[i].l.cc + "(" + tableData[i].l.cty + ")";
+                    }
+
+                    if (tableData[i].t && Object.keys(tableData[i].t).length) {
+                        item[CV.i18n('logger.info').toUpperCase()] = Object.keys(tableData[i].t).join(', ');
+                    }
+                    if (tableData[i].q) {
+                        try {
+                            item[CV.i18n('logger.request-query').toUpperCase()] = sanitizeQueryData(tableData[i].q);
+                        }
+                        catch (err) {
+                            item[CV.i18n('logger.request-header').toUpperCase()] = "-";
+                        }
+                    }
+                    if (tableData[i].h) {
+                        try {
+                            item["REQUEST HEADER"] = sanitizeQueryData(tableData[i].h);
+                        }
+                        catch (err) {
+                            item["REQUEST HEADER"] = "-";
+                        }
+                    }
+                    table.push(item);
+                }
+                return table;
+
             },
             getTitleTooltip: function() {
                 return this.i18n('logger.description');
-            },
-            getRefreshTooltip: function() {
-                return this.i18n('logger.auto-refresh-help');
-            },
-            stopAutoRefresh: function() {
-                this.autoRefresh = false;
             },
             fetchRequestLogs: function(isRefreshing) {
                 var vm = this;
@@ -168,7 +227,7 @@
                     });
             },
             refresh: function() {
-                if (this.autoRefresh) {
+                if (this.$refs && this.$refs.loggerAutoRefreshToggle && this.$refs.loggerAutoRefreshToggle.autoRefresh) {
                     this.fetchRequestLogs(true);
                 }
             },

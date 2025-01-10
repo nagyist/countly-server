@@ -1,32 +1,90 @@
-/*global $, countlyReporting, countlyGlobal, CountlyHelpers, starRatingPlugin, app, jQuery, countlyCommon, CV, countlyVue, moment*/
+/*global $, countlyReporting, countlyGlobal, CountlyHelpers, starRatingPlugin, app, jQuery, countlyPlugins, countlyCommon,  CV, countlyVue, moment, countlyCohorts*/
 (function() {
     var FEATURE_NAME = 'star_rating';
-
+    var CLY_X_INT = 'cly_x_int';
     /**
     * Replace escaped characters
-    * @param {string} val - string to replace
+    * @param {string} str - string to replace
     * @returns {string} - replaced escaped characters
     */
-    function replaceEscapes(val) {
-        return val.replace("&#39;", "'");
+    function replaceEscapes(str) {
+        if (typeof str === 'string') {
+            return str.replace(/^&#36;/g, "$").replace(/&#46;/g, '.').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&le;/g, '<=').replace(/&ge;/g, '>=').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+        }
+        return str;
     }
 
+    var consentLink = countlyVue.views.create({
+        template: CV.T("/star-rating/templates/star-consent-link.html"),
+        props: {
+            value: {
+                type: Object,
+                default: false
+            },
+            maxLinks: {
+                type: Number,
+                default: 3
+            },
+            readOnly: {
+                type: Boolean,
+                default: false
+            }
+        },
+        methods: {
+            setFocusedChild: function(childId) {
+                this.$emit("update:focusedItemIdentifier", childId);
+            },
+            removeLinkAtIndex: function(index) {
+                this.$delete(this.links, index);
+            },
+            onDelete: function(id) {
+                if (this.value.link.length > 1 && this.value.link.length <= this.maxLinks) {
+                    this.value.link.splice(id, 1);
+                }
+            },
+            add: function() {
+                this.value.link.push({
+                    "text": "Another Link",
+                    "link": "https://otherlink.com",
+                    "textValue": "Another Link",
+                    "linkValue": "https://otherlink.com"
+                });
+            }
+        },
+        computed: {
+            newLinkAllowed: function() {
+                return !this.readOnly && this.value.link.length < this.maxLinks;
+            }
+        }
+    });
+
     var Drawer = countlyVue.views.create({
+        mixins: [countlyVue.mixins.commonFormatters],
         template: CV.T("/star-rating/templates/drawer.html"),
         props: {
             settings: Object,
             controls: Object
         },
-        mixins: [],
+        components: {
+            "star-consent-link": consentLink
+        },
         data: function() {
             return {
                 imageSource: '',
                 deleteLogo: false,
                 imageSrc: '',
+                logoType: 'default',
+                globalLogo: false,
+                consent: false,
                 ratingItem: [ { active: false, inactive: false }, { active: false, inactive: false }, { active: false, inactive: false }, { active: false, inactive: false }, { active: false, inactive: false }],
                 constants: {
                 // TODO: will be localized
                     trigger_sizes: [{label: 'Small', value: 's'}, {label: 'Medium', value: 'm'}, {label: 'Large', value: 'l'}],
+                    logoOptions: [
+                        { label: this.i18n("surveys.appearance.logo.option.default"), value: "default" },
+                        { label: this.i18n("surveys.appearance.logo.option.custom"), value: "custom" },
+                        { label: this.i18n("surveys.appearance.logo.option.no.logo"), value: "none" }
+                    ],
                     trigger_positions: [{value: 'mleft', label: 'Center left', key: 'middle-left'}, { value: 'mright', label: 'Center right', key: 'middle-right' }, { value: 'bleft', label: 'Bottom left', key: 'bottom-left'}, { value: 'bright', label: 'Bottom right', key: 'bottom-right' }]
                 },
                 ratingSymbols: ['emojis', 'thumbs', 'stars'],
@@ -57,6 +115,37 @@
         },
         methods: {
         // drawer event handlers
+            onConsentCheckbox: function(ev) {
+                if (!ev.links || ev.links.length < 1) {
+                    ev.links = {
+                        "link": [
+                            {
+                                "text": "Terms and Conditions",
+                                "link": "https://termsandconditions.com",
+                                "textValue": "Terms and Conditions",
+                                "linkValue": "https://termsandconditions.com"
+                            },
+                            {
+                                "text": "Privacy Policy",
+                                "link": "https://privacyPolicy.com",
+                                "textValue": "Privacy Policy",
+                                "linkValue": "https://privacyPolicy.com"
+                            }
+                        ],
+                        "finalText": "I agree to the Terms and Conditions and Privacy Policy.",
+                    };
+                }
+            },
+            finalTxt: function(links) {
+                let finalText = links.finalText;
+
+                links.link.forEach(link => {
+                    const regex = new RegExp(`\\b${link.textValue}\\b`, 'g');
+                    finalText = finalText.replace(regex, `<a href="${link.linkValue}" target="_blank">${link.textValue}</a>`);
+                });
+
+                return finalText;
+            },
             onClose: function() {},
             setRatingItemActive: function(index) {
                 var self = this;
@@ -73,15 +162,30 @@
             },
             onSubmit: function(submitted, done) {
                 var self = this;
-
+                if (submitted.links) {
+                    submitted.finalText = submitted.links.finalText;
+                    submitted.links = submitted.links.link;
+                    submitted.links.forEach(function(link) {
+                        var separator = link.linkValue.indexOf('?') !== -1 ? '&' : '?';
+                        link.linkValue = link.linkValue + separator + CLY_X_INT + '=1';
+                        delete link.text;
+                        delete link.link;
+                    });
+                }
                 if (this.logoFile !== "") {
                     submitted.logo = this.logoFile;
                 }
 
-                if (!this.imageSource) {
+                if (!this.imageSource || submitted.logoType !== 'custom') {
                     submitted.logo = '';
                 }
 
+                if (!submitted.logoType) {
+                    submitted.logoType = 'default';
+                }
+                if (!submitted.globalLogo) {
+                    submitted.globalLogo = false;
+                }
                 if (this.cohortsEnabled) {
                     var finalizedTargeting = null;
                     var exported = this.$refs.ratingsSegmentation.export();
@@ -119,8 +223,16 @@
             onOpen: function() {
                 var self = this;
                 var loadImage = new Image();
+
                 if (this.controls.initialEditedObject.logo) {
-                    loadImage.src = window.location.origin + "/star-rating/images/" + this.controls.initialEditedObject.logo;
+
+                    if (this.controls.initialEditedObject.logo.indexOf("feedback_logo") > -1
+                    ) {
+                        loadImage.src = window.location.origin + this.controls.initialEditedObject.logo;
+                    }
+                    else {
+                        loadImage.src = window.location.origin + "/star-rating/images/" + this.controls.initialEditedObject.logo;
+                    }
                 }
                 loadImage.onload = function() {
                     self.imageSource = loadImage.src;
@@ -145,7 +257,9 @@
                 }, 1);
             },
             onComplete: function(res) {
-                this.logoFile = this.stamp + "." + res.upload.filename.split(".")[1];
+                var fileName = res.upload.filename;
+                var fileExtension = fileName.substring(fileName.lastIndexOf('.') + 1);
+                this.logoFile = this.stamp + '.' + fileExtension;
             },
             remove: function() {
                 this.imageSource = '';
@@ -156,22 +270,95 @@
 
     // these table components should be 3 different components
     var CommentsTable = countlyVue.views.create({
+        mixins: [countlyVue.mixins.commonFormatters],
         template: CV.T("/star-rating/templates/comments-table.html"),
         props: {
-            comments: Array
+            comments: Array,
+            loadingState: Boolean,
+            filter: {
+                type: Object,
+                default: {},
+                required: false
+            }
+        },
+        watch: {
+            filter: {
+                immediate: true,
+                handler: function(newValue) {
+                    this.filterVal = newValue;
+                    this.tableStore.dispatch("fetchCommentsTable");
+                }
+            },
+        },
+        methods: {
+            dateChanged: function() {
+                this.tableStore.dispatch("fetchCommentsTable");
+            },
+            decode: function(str) {
+                if (typeof str === 'string') {
+                    return str.replace(/^&#36;/g, "$").replace(/&#46;/g, '.').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&le;/g, '<=').replace(/&ge;/g, '>=').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+                }
+                return str;
+            }
         },
         computed: {
             preparedRows: function() {
+                var self = this;
                 return this.comments.map(function(comment) {
-                    comment.cd = countlyCommon.formatTimeAgo(comment.cd);
+                    comment.cd = countlyCommon.formatTimeAgoText(comment.cd).tooltip;
                     comment.time = moment.unix(comment.ts).format("DD MMMM YYYY HH:MM:SS");
+                    comment.comment = self.decode(comment.comment);
                     return comment;
                 });
             }
         },
         data: function() {
+            var self = this;
+            var tableStore = countlyVue.vuex.getLocalStore(countlyVue.vuex.ServerDataTable("commentsTable", {
+                columns: ['comment', 'cd', 'email', 'rating'],
+                onRequest: function() {
+                    const data = {app_id: countlyCommon.ACTIVE_APP_ID, period: countlyCommon.getPeriodForAjax()};
+                    var filter = self.filterVal;
+                    if (filter) {
+                        if (filter.rating && filter.rating !== "") {
+                            data.rating = filter.rating;
+                        }
+                        if (filter.version && filter.version !== "") {
+                            data.version = filter.version.replace(":", ".");
+                        }
+                        if (filter.platform && filter.platform !== "") {
+                            data.platform = filter.platform;
+                        }
+                        if (filter.widget && filter.widget !== "") {
+                            data.widget_id = filter.widget;
+                        }
+                        if (filter.uid && filter.uid !== "") {
+                            data.uid = filter.uid;
+                        }
+                    }
+                    return {
+                        type: "GET",
+                        url: countlyCommon.API_URL + "/o/feedback/data",
+                        data: data
+                    };
+                },
+                onError: function(context, err) {
+                    throw err;
+                },
+                onReady: function(context, rows) {
+                    rows.forEach(function(row) {
+                        row.cd = countlyCommon.formatTimeAgoText(row.cd).tooltip;
+                        row.time = moment.unix(row.ts).format("DD MMMM YYYY HH:MM:SS");
+                        row.comment = replaceEscapes(row.comment);
+                    });
+                    return rows;
+                },
+            }));
             return {
-                commentsTablePersistKey: 'comments_table_' + countlyCommon.ACTIVE_APP_ID
+                tableStore: tableStore,
+                filterVal: this.filter,
+                commentsTablePersistKey: 'comments_table_' + countlyCommon.ACTIVE_APP_ID,
+                remoteTableDataSource: countlyVue.vuex.getServerDataSource(tableStore, "commentsTable"),
             };
         }
     });
@@ -200,7 +387,8 @@
     var WidgetsTable = countlyVue.views.create({
         template: CV.T("/star-rating/templates/widgets-table.html"),
         mixins: [
-            countlyVue.mixins.auth(FEATURE_NAME)
+            countlyVue.mixins.auth(FEATURE_NAME),
+            countlyVue.mixins.commonFormatters
         ],
         props: {
             rows: {
@@ -244,8 +432,34 @@
             }
         },
         methods: {
-            goWidgetDetail: function(id) {
-                window.location.hash = "#/" + countlyCommon.ACTIVE_APP_ID + "/feedback/ratings/widgets/" + id;
+            parseTargetingForExport: function(widget) {
+                var targeting = countlyCohorts.getSegmentationDescription(widget);
+                var html = targeting.behavior;
+                var div = document.createElement('div');
+                div.innerHTML = html;
+                return div.textContent || div.innerText || "";
+            },
+            formatExportFunction: function() {
+                var tableData = this.widgets;
+                var table = [];
+                for (var i = 0; i < tableData.length; i++) {
+                    var item = {};
+
+                    item[CV.i18n('feedback.status').toUpperCase()] = tableData[i].status ? "Active" : "Inactive";
+                    item[CV.i18n('feedback.ratings-widget-name').toUpperCase()] = tableData[i].popup_header_text;
+                    item[CV.i18n('feedback.widget-id').toUpperCase()] = tableData[i]._id;
+                    item[CV.i18n('feedback.targeting').toUpperCase()] = this.parseTargetingForExport(tableData[i].targeting).trim();
+                    item[CV.i18n('feedback.rating-score').toUpperCase()] = tableData[i].ratingScore;
+                    item[CV.i18n('feedback.responses').toUpperCase()] = tableData[i].ratingsCount;
+                    item[CV.i18n('feedback.pages').toUpperCase()] = tableData[i].target_pages;
+
+                    table.push(item);
+                }
+                return table;
+
+            },
+            goWidgetDetail: function(row) {
+                window.location.hash = "#/" + countlyCommon.ACTIVE_APP_ID + "/feedback/ratings/widgets/" + row._id;
             },
             parseTargeting: function(widget) {
                 if (widget.targeting) {
@@ -299,12 +513,14 @@
                     {
                         title: CV.i18n('feedback.ratings'),
                         name: 'ratings-table',
-                        component: RatingsTable
+                        component: RatingsTable,
+                        dataTestId: "ratings-data-table-tab-ratings"
                     },
                     {
                         title: CV.i18n('feedback.comments'),
                         name: 'comments-table',
-                        component: CommentsTable
+                        component: CommentsTable,
+                        dataTestId: "ratings-data-table-tab-comments"
                     }
                 ],
                 dynamicTab: 'ratings-table',
@@ -323,8 +539,8 @@
             };
         },
         methods: {
-            refresh: function() {
-                this.fetch();
+            refresh: function(force) {
+                this.fetch(force);
             },
             matchPlatformVersion: function(documentName) {
                 var regexString = '';
@@ -378,6 +594,11 @@
                 var result = self.rating;
                 var periodArray = countlyCommon.getPeriodObj().currentPeriodArr;
 
+                var idMap = {};
+                self.widgets.forEach(function(obj) {
+                    idMap[obj._id] = obj;
+                });
+
                 // prepare cumulative data by period object
                 for (var i = 0; i < periodArray.length; i++) {
                     var dateArray = periodArray[i].split('.');
@@ -388,7 +609,8 @@
                         for (var rating in result[year][month][day]) {
                             if (self.matchPlatformVersion(rating)) {
                                 var rank = (rating.split("**"))[2];
-                                if (self.cumulativeData[rank - 1]) {
+                                var widget = (rating.split("**"))[3];
+                                if (self.cumulativeData[rank - 1] && idMap[widget]) {
                                     self.cumulativeData[rank - 1].count += result[year][month][day][rating].c;
                                     self.count += result[year][month][day][rating].c;
                                     self.sum += (result[year][month][day][rating].c * rank);
@@ -424,7 +646,7 @@
                 if (force) {
                     self.isLoading = true;
                 }
-                $.when(starRatingPlugin.requestPlatformVersion(), starRatingPlugin.requestRatingInPeriod(), starRatingPlugin.requesPeriod(), starRatingPlugin.requestFeedbackData(self.activeFilter), starRatingPlugin.requestFeedbackWidgetsData())
+                $.when(starRatingPlugin.requestPlatformVersion(), starRatingPlugin.requestRatingInPeriod(), starRatingPlugin.requesPeriod(), starRatingPlugin.requestFeedbackWidgetsData())
                     .then(function() {
                         self.isLoading = false;
                         // set platform versions for filter
@@ -434,8 +656,6 @@
                         // calculate cumulative data for chart
                         self.rating = starRatingPlugin.getRatingInPeriod();
                         self.calCumulativeData();
-                        // set comments data for all widgets
-                        self.feedbackData = starRatingPlugin.getFeedbackData();
                     });
             },
             prepareVersions: function(newValue) {
@@ -471,18 +691,21 @@
                         label: "Platform",
                         key: "platform",
                         items: self.platformOptions,
+                        dataTestId: {label: "ratings-filter-parameters-platform-label", dropdown: "ratings-filter-parameters-platform-dropdown"},
                         default: ""
                     },
                     {
                         label: "App Version",
                         key: "version",
                         items: self.versionOptions,
+                        dataTestId: {label: "ratings-filter-parameters-version-label", dropdown: "ratings-filter-parameters-version-dropdown"},
                         default: ""
                     },
                     {
                         label: "Widget",
                         key: "widget",
                         items: self.widgetOptions,
+                        dataTestId: {label: "ratings-filter-parameters-widget-label", dropdown: "ratings-filter-parameters-widget-dropdown"},
                         default: ""
                     }
                 ];
@@ -520,14 +743,47 @@
                 },
                 widget: '',
                 rating: {},
-                loading: true
+                loading: true,
+                cohortsEnabled: countlyGlobal.plugins.indexOf('cohorts') > -1
             };
         },
         methods: {
             createWidget: function() {
             // TODO: move this to model
             // TODO: localizations
+                var trigger_bg_color = '#123456';
+                var trigger_font_color = '#fff';
+                var logoType = 'default';
+                var logo = null;
+                var globalLogo = false;
+                if ((countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID] && countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID].plugins && countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID].plugins.feedbackApp) || countlyPlugins.getConfigsData().feedback) {
+                    var feedbackApp = countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID] && countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID].plugins && countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID].plugins.feedbackApp ? countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID].plugins.feedbackApp : null;
+                    var feedback = countlyPlugins.getConfigsData().feedback;
+                    if (feedbackApp && feedbackApp.main_color) {
+                        trigger_bg_color = feedbackApp.main_color;
+                    }
+                    else if (countlyPlugins.getConfigsData().feedback) {
+                        trigger_bg_color = feedback.main_color;
+                    }
+                    if (feedbackApp && feedbackApp.font_color) {
+                        trigger_font_color = feedbackApp.font_color;
+                    }
+                    else if (countlyPlugins.getConfigsData().feedback) {
+                        trigger_font_color = feedback.font_color;
+                    }
+                    if (feedbackApp && feedbackApp.feedback_logo) {
+                        logo = '/feedback/preview/' + feedbackApp.feedback_logo;
+                        logoType = 'custom';
+                        globalLogo = true;
+                    }
+                    else if (countlyPlugins.getConfigsData().feedback && countlyPlugins.getConfigsData().feedback.feedback_logo) {
+                        logo = '/feedback/preview/' + feedback.feedback_logo;
+                        logoType = 'custom';
+                        globalLogo = true;
+                    }
+                }
                 this.openDrawer("widget", {
+                    consent: false,
                     popup_header_text: 'What\'s your opinion about this page?',
                     popup_thanks_message: 'Thanks for your feedback!',
                     popup_button_callout: 'Submit Feedback',
@@ -550,20 +806,35 @@
                         steps: null
                     },
                     trigger_button_text: 'Feedback',
-                    trigger_bg_color: '#123456',
-                    trigger_font_color: '#fff',
+                    trigger_bg_color: trigger_bg_color,
+                    trigger_font_color: trigger_font_color,
                     hide_sticker: false,
                     status: true,
-                    logo: null,
+                    logo: logo,
                     target_pages: ["/"],
-                    target_page: false
+                    target_page: false,
+                    logoType: logoType,
+                    globalLogo: globalLogo,
+                    internalName: ''
                 });
             },
-            refresh: function() {
-                this.fetch();
+            refresh: function(force) {
+                this.fetch(force);
             },
             setWidget: function(row, status) {
-                starRatingPlugin.editFeedbackWidget({ _id: row._id, status: status }, function() {
+                var finalizedTargeting = null;
+                var target_pages = row.target_pages === "-" ? [] : row.target_pages.split(", ");
+                if (this.cohortsEnabled) {
+                    var exported = row.targeting;
+                    if (exported && !((exported.steps && exported.steps.length === 0) && (exported.user_segmentation && Object.keys(exported.user_segmentation.query).length === 0))) {
+                        finalizedTargeting = Object.assign({}, {
+                            user_segmentation: JSON.stringify(exported.user_segmentation),
+                            steps: JSON.stringify(exported.steps)
+                        });
+                    }
+
+                }
+                starRatingPlugin.editFeedbackWidget({ _id: row._id, status: status, target_pages: target_pages, targeting: finalizedTargeting }, function() {
                     CountlyHelpers.notify({
                         type: 'success',
                         message: CV.i18n('feedback.successfully-updated')
@@ -607,9 +878,11 @@
                     }
                 }
             },
-            fetch: function() {
+            fetch: function(force) {
                 var self = this;
-                this.loading = true;
+                if (force) {
+                    this.loading = true;
+                }
                 $.when(starRatingPlugin.requestFeedbackWidgetsData(), starRatingPlugin.requestPlatformVersion(), starRatingPlugin.requestRatingInPeriod(), starRatingPlugin.requesPeriod())
                     .then(function() {
                     // set platform versions for filter
@@ -623,7 +896,7 @@
             }
         },
         created: function() {
-            this.fetch();
+            this.fetch(true);
         }
     });
 
@@ -638,13 +911,15 @@
                         title: CV.i18n('feedback.ratings'),
                         name: 'ratings',
                         component: RatingsTab,
-                        route: '#/' + countlyCommon.ACTIVE_APP_ID + '/feedback/ratings/ratings'
+                        route: '#/' + countlyCommon.ACTIVE_APP_ID + '/feedback/ratings/ratings',
+                        dataTestId: "ratings-tab-ratings"
                     },
                     {
                         title: CV.i18n('feedback.widgets'),
                         name: 'widgets',
                         component: WidgetsTab,
-                        route: '#/' + countlyCommon.ACTIVE_APP_ID + '/feedback/ratings/widgets'
+                        route: '#/' + countlyCommon.ACTIVE_APP_ID + '/feedback/ratings/widgets',
+                        dataTestId: "ratings-tab-rating-widgets"
                     }
                 ]
             };
@@ -658,7 +933,8 @@
         },
         mixins: [
             countlyVue.mixins.hasDrawers("widget"),
-            countlyVue.mixins.auth(FEATURE_NAME)
+            countlyVue.mixins.auth(FEATURE_NAME),
+            countlyVue.mixins.commonFormatters
         ],
         data: function() {
             return {
@@ -686,12 +962,14 @@
                     {
                         title: CV.i18n('feedback.ratings'),
                         name: 'ratings-table',
-                        component: RatingsTable
+                        component: RatingsTable,
+                        dataTestId: "ratings-detail-table-tab-ratings"
                     },
                     {
                         title: CV.i18n('feedback.comments'),
                         name: 'comments-table',
-                        component: CommentsTable
+                        component: CommentsTable,
+                        dataTestId: "ratings-detail-table-tab-comments"
                     }
                 ],
                 feedbackData: [],
@@ -793,7 +1071,19 @@
             },
             setWidget: function(state) {
                 var self = this;
-                starRatingPlugin.editFeedbackWidget({ _id: this.widget._id, status: (state) }, function() {
+                var finalizedTargeting = null;
+                var target_pages = this.widget.target_pages === "-" ? [] : this.widget.target_pages;
+                if (this.cohortsEnabled) {
+                    var exported = this.widget.targeting;
+                    if (exported && !((exported.steps && exported.steps.length === 0) && (exported.user_segmentation && Object.keys(exported.user_segmentation.query).length === 0))) {
+                        finalizedTargeting = Object.assign({}, {
+                            user_segmentation: JSON.stringify(exported.user_segmentation),
+                            steps: JSON.stringify(exported.steps)
+                        });
+                    }
+
+                }
+                starRatingPlugin.editFeedbackWidget({ _id: this.widget._id, status: (state), target_pages: target_pages, targeting: finalizedTargeting }, function() {
                     self.widget.is_active = (state ? "true" : "false");
                     self.widget.status = state;
 
@@ -804,6 +1094,7 @@
                 });
             },
             editWidget: function() {
+                this.widget.globalLogo = false;
                 if (this.cohortsEnabled && this.widget.targeting && this.widget.targeting.user_segmentation && this.widget.targeting.user_segmentation.query && typeof this.widget.targeting.user_segmentation.query === "object") {
                     this.widget.targeting.user_segmentation.query = JSON.stringify(this.widget.targeting.user_segmentation.query);
                 }
@@ -813,6 +1104,53 @@
                         steps: null
                     };
                 }
+
+                if (this.widget.consent === true || this.widget.consent === "true") {
+                    this.widget.consent = true;
+                }
+                else {
+                    this.widget.consent = false;
+                }
+
+                if (Array.isArray(this.widget.links) && this.widget.links.length) {
+                    this.widget.links.forEach(function(link) {
+                        if (link.linkValue.indexOf('term')) {
+                            link.text = "Terms and Conditions";
+                            link.link = "https://termsandconditions.com";
+                        }
+                        else if (link.linkValue.indexOf('text')) {
+                            link.text = "Privacy Policy";
+                            link.link = "https://privacyPolicy.com";
+                        }
+                        else {
+                            link.text = "Another Link";
+                            link.link = "https://otherlink.com";
+                        }
+                        link.linkValue = link.linkValue.replace(new RegExp('[?&]' + CLY_X_INT + '=[^&]*'), '').replace(/[?&]$/, '');
+                    });
+                    this.widget.links = {"link": this.widget.links, "finalText": this.widget.finalText};
+                }
+                else {
+                    this.widget.links = {
+                        "link": [
+                            {
+                                "text": "Terms and Conditions",
+                                "link": "https://termsandconditions.com",
+                                "textValue": "Terms and Conditions",
+                                "linkValue": "https://termsandconditions.com"
+                            },
+                            {
+                                "text": "Privacy Policy",
+                                "link": "https://privacyPolicy.com",
+                                "textValue": "Privacy Policy",
+                                "linkValue": "https://privacyPolicy.com"
+                            }
+                        ],
+                        "finalText": "I agree to the Terms and Conditions and Privacy Policy."
+
+                    };
+                }
+
                 if (!this.widget.rating_symbol) {
                     this.widget.rating_symbol = "emojis";
                 }
@@ -840,6 +1178,12 @@
                 if (!this.widget.logo) {
                     this.widget.logo = null;
                 }
+                if (!this.widget.logoType) {
+                    this.widget.logoType = 'default';
+                }
+                if (this.widget.logo && this.widget.logo.indexOf("feedback_logo")) {
+                    this.widget.globalLogo = true;
+                }
                 if (!this.widget.targeting) {
                     this.widget.targeting = {
                         user_segmentation: null,
@@ -866,7 +1210,7 @@
                             });
                             window.location.hash = "#/" + countlyCommon.ACTIVE_APP_ID + "/feedback/ratings/widgets";
                         });
-                    }, [], { image: 'delete-an-app', title: CV.i18n('feedback.delete-a-widget') });
+                    }, [], { image: 'delete-an-app', title: CV.i18n('feedback.delete-a-widget') }, "ratings-detail");
                     break;
                 }
             },
@@ -889,8 +1233,8 @@
                 }
                 return (new RegExp(regexString, 'i')).test(documentName);
             },
-            refresh: function() {
-                this.fetch();
+            refresh: function(force) {
+                this.fetch(force);
             },
             fetch: function(force) {
                 var self = this;
@@ -899,7 +1243,7 @@
                 starRatingPlugin.requestSingleWidget(this.$route.params.id, function(widget) {
                     self.widget = widget;
                     self.widget.popup_header_text = replaceEscapes(self.widget.popup_header_text);
-                    self.widget.created_at = countlyCommon.formatTimeAgo(self.widget.created_at);
+                    self.widget.created_at = countlyCommon.formatTimeAgoText(self.widget.created_at).text;
                     if (self.cohortsEnabled) {
                         self.widget = self.parseTargeting(widget);
                     }
@@ -909,7 +1253,7 @@
                 if (force) {
                     this.isLoading = true;
                 }
-                $.when(starRatingPlugin.requestPlatformVersion(), starRatingPlugin.requestRatingInPeriod(), starRatingPlugin.requesPeriod(), starRatingPlugin.requestFeedbackData(self.activeFilter))
+                $.when(starRatingPlugin.requestPlatformVersion(), starRatingPlugin.requestRatingInPeriod(), starRatingPlugin.requesPeriod())
                     .then(function() {
                         self.isLoading = false;
                         // set platform versions for filter
@@ -918,8 +1262,6 @@
                         // calculate cumulative data for chart
                         self.rating = starRatingPlugin.getRatingInPeriod();
                         self.calCumulativeData();
-                        // set comments data for all widgets
-                        self.feedbackData = starRatingPlugin.getFeedbackData();
                     });
             },
             prepareVersions: function(newValue) {
@@ -995,6 +1337,7 @@
     });
 
     var UserFeedbackRatingsTable = countlyVue.views.create({
+        mixins: [countlyVue.mixins.commonFormatters],
         template: CV.T('/star-rating/templates/users-feedback-ratings-table.html'),
         props: {
             ratings: {
@@ -1028,6 +1371,11 @@
                         }
                     ];
                 }
+            },
+            isLoading: {
+                type: Boolean,
+                default: false,
+                required: false
             }
         }
     });
@@ -1038,6 +1386,7 @@
         title: 'Feedback',
         name: 'feedback',
         permission: FEATURE_NAME,
+        pluginName: "star-rating",
         component: countlyVue.components.create({
             template: CV.T("/star-rating/templates/users-tab.html"),
             components: {
@@ -1047,19 +1396,22 @@
                 return {
                     uid: '',
                     ratingsData: [],
-                    title: CV.i18n('feedback.ratings')
+                    title: CV.i18n('feedback.ratings'),
+                    isLoading: false
                 };
             },
             methods: {},
             created: function() {
                 this.uid = this.$route.params.uid;
                 var self = this;
+                this.isLoading = true;
                 starRatingPlugin.requestFeedbackData({uid: this.uid, period: "noperiod"})
                     .then(function() {
                         self.ratingsData = starRatingPlugin.getFeedbackData().aaData;
                         self.ratingsData.map(function(rating) {
                             rating.ts = countlyCommon.formatTimeAgo(rating.ts);
                         });
+                        self.isLoading = false;
                     });
             }
         })
@@ -1101,7 +1453,7 @@
     });
 
     app.addPageScript("/manage/reports", function() {
-        countlyReporting.addMetric({name: jQuery.i18n.map["reports.star-rating"], value: "star-rating"});
+        countlyReporting.addMetric({name: jQuery.i18n.map["reports.star-rating"], pluginName: "star-rating", value: "star-rating"});
     });
 
     /*
@@ -1234,10 +1586,135 @@ app.addPageScript("/drill#", function() {
 });
 */
 
-    app.addMenu("reach", {code: "feedback", text: "sidebar.feedback", icon: '<div class="logo ion-android-star-half"></div>', priority: 20});
+    if (app.configurationsView && !app.configurationsView.predefinedLabels["feedback.main_color"]) {
+        app.configurationsView.registerLabel("feedback.main_color", "feedback.main_color-title");
+        app.configurationsView.registerLabel("feedback.font_color", "feedback.font_color-title");
+        app.configurationsView.registerLabel("feedback.feedback_logo", "feedback.logo-title");
+        app.configurationsView.registerInput("feedback.main_color", {input: "cly-colorpicker", helper: "feedback.main_color.description", attrs: {resetValue: '#2FA732'}});
+        app.configurationsView.registerInput("feedback.font_color", {input: "cly-colorpicker", helper: "feedback.font_color.description", attrs: {resetValue: '#2FA732'}});
+        app.configurationsView.registerInput("feedback.feedback_logo", {
+            input: "image",
+            helper: "feedback.logo.description",
+            image_size: "feedback_logo",
+            attrs: {
+                name: "feedback_logo",
+                action: countlyGlobal.path + "/i/feedback/upload",
+                data: {auth_token: countlyGlobal.auth_token}
+            },
+            errorMessage: "",
+            success: function() {
+                app.configurationsView.predefinedInputs["feedback.feedback_logo"].errorMessage = "";
+                if (this.$root && this.$root.$children) {
+                    for (var i = 0; i < this.$root.$children.length; i++) {
+                        if (this.$root.$children[i].configsData) {
+                            this.$root.$children[i].onChange("feedback_logo", "feedback_logo");
+                            break;
+                        }
+                    }
+                }
+            },
+            error: function(err) {
+                var message = jQuery.i18n.map["feedback.error"];
+                if (err && err.message) {
+                    try {
+                        var parts = JSON.parse(err.message);
+                        var m = parts.message || parts.error || parts.result;
+                        message = jQuery.i18n.map[m] || m;
+                    }
+                    catch (ex) {
+                        message = jQuery.i18n.map["feedback.error"];
+                    }
+                }
+                app.configurationsView.predefinedInputs["feedback.feedback_logo"].errorMessage = message;
+            },
+            data: function() {
+                return {
+                    id: countlyCommon.ACTIVE_APP_ID,
+                };
+            },
+            before: function(file) {
+                var type = file.type;
+                if (type !== "image/png" && type !== "image/gif" && type !== "image/jpeg") {
+                    app.configurationsView.predefinedInputs["feedback.feedback_logo"].errorMessage = jQuery.i18n.map["feedback.imagef-error"];
+                    return false;
+                }
+                if (file.size > 1.5 * 1024 * 1024) {
+                    app.configurationsView.predefinedInputs["feedback.feedback_logo"].errorMessage = jQuery.i18n.map["feedback.image-error"];
+                    return false;
+                }
+                return true;
+            }
+        });
+    }
+
+    if (app.appManagementViews && !app.appManagementViews.feedbackApp) {
+        var segments = window.location.href.split('/');
+        var manageIndex = segments.indexOf('apps');
+        var feedbackId = countlyCommon.ACTIVE_APP_ID;
+        if (manageIndex !== -1) {
+            feedbackId = segments[manageIndex + 1];
+        }
+        app.addAppManagementInput("feedbackApp", CV.i18n("feedback.title"),
+            {
+                "feedbackApp.main_color": {input: "cly-colorpicker", attrs: {resetValue: '#2FA732'}, defaultValue: ""},
+                "feedbackApp.font_color": {input: "cly-colorpicker", attrs: {resetValue: '#2FA732'}, defaultValue: ""},
+                "feedbackApp.feedback_logo": {
+                    input: "image",
+                    helper: "feedback.logo.description",
+                    image_size: "feedback_logo" + feedbackId,
+                    attrs: {
+                        action: countlyGlobal.path + "/i/feedback/upload",
+                    },
+                    errorMessage: "",
+                    success: function() {
+                        app.configurationsView.predefinedInputs["feedback.feedback_logo"].errorMessage = "";
+                        if (this.$root && this.$root.$children) {
+                            for (var i = 0; i < this.$root.$children.length; i++) {
+                                if (this.$root.$children[i].appDetails) {
+                                    this.$root.$children[i].onChange("feedbackApp.feedback_logo", "feedback_logo" + feedbackId);
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    error: function(err) {
+                        var message = jQuery.i18n.map["feedback.error"];
+                        if (err && err.message) {
+                            try {
+                                var parts = JSON.parse(err.message);
+                                var m = parts.message || parts.error || parts.result;
+                                message = jQuery.i18n.map[m] || m;
+                            }
+                            catch (ex) {
+                                message = jQuery.i18n.map["feedback.error"];
+                            }
+                        }
+                        app.configurationsView.predefinedInputs["feedback.feedback_logo" + feedbackId].errorMessage = message;
+                    },
+                    before: function(file) {
+                        segments = window.location.href.split('/');
+                        manageIndex = segments.indexOf('apps');
+                        feedbackId = segments[manageIndex + 1] || countlyCommon.ACTIVE_APP_ID;
+                        var type = file.type;
+                        if (type !== "image/png" && type !== "image/gif" && type !== "image/jpeg") {
+                            app.configurationsView.predefinedInputs["feedback.feedback_logo" + feedbackId].errorMessage = jQuery.i18n.map["feedback.imagef-error"];
+                            return false;
+                        }
+                        if (file.size > 1.5 * 1024 * 1024) {
+                            app.configurationsView.predefinedInputs["feedback.feedback_logo" + feedbackId].errorMessage = jQuery.i18n.map["feedback.image-error"];
+                            return false;
+                        }
+                        return true;
+                    }
+                }
+            });
+    }
+
+    app.addMenu("reach", {code: "feedback", permission: FEATURE_NAME, text: "sidebar.feedback", icon: '<div class="logo ion-android-star-half"></div>', priority: 20});
     app.addSubMenu("feedback", {
         code: "star-rating",
         permission: FEATURE_NAME,
+        pluginName: "star-rating",
         url: "#/feedback/ratings",
         text: "star.menu-title",
         icon: '<div class="logo ion-android-star-half"></div>',
@@ -1245,6 +1722,7 @@ app.addPageScript("/drill#", function() {
     });
 
     countlyVue.container.registerMixin("/manage/export/export-features", {
+        pluginName: "star-rating",
         beforeCreate: function() {
             var self = this;
             $.when(starRatingPlugin.requestFeedbackWidgetsData()).then(function() {

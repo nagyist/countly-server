@@ -100,8 +100,10 @@
         priority: 2,
         name: "slipping-away-users",
         permission: FEATURE_NAME,
+        pluginName: "slipping-away-users",
         title: CV.i18n('slipping-away-users.title'),
         route: "#/analytics/loyalty/slipping-away-users",
+        dataTestId: "slipping-away",
         component: SlippingAwayUsersView,
         vuex: [{
             clyModel: countlySlippingAwayUsers

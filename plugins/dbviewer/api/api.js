@@ -5,8 +5,11 @@ var common = require('../../../api/utils/common.js'),
     countlyFs = require('../../../api/utils/countlyFs.js'),
     _ = require('underscore'),
     taskManager = require('../../../api/utils/taskmanager.js'),
-    { dbUserHasAccessToCollection, dbLoadEventsData, validateUser, getUserApps, validateGlobalAdmin } = require('../../../api/utils/rights.js'),
+    { getCollectionName, dbUserHasAccessToCollection, dbLoadEventsData, validateUser, getUserApps, validateGlobalAdmin, hasReadRight } = require('../../../api/utils/rights.js'),
     exported = {};
+const { MongoInvalidArgumentError } = require('mongodb');
+
+const { EJSON } = require('bson');
 
 const FEATURE_NAME = 'dbviewer';
 var spawn = require('child_process').spawn,
@@ -94,7 +97,7 @@ var spawn = require('child_process').spawn,
         **/
         function objectIdCheck(doc) {
             if (typeof doc === "string") {
-                doc = JSON.parse(doc);
+                doc = EJSON.parse(doc);
             }
             for (var key in doc) {
                 if (doc[key] && typeof doc[key].toHexString !== "undefined" && typeof doc[key].toHexString === "function") {
@@ -115,6 +118,15 @@ var spawn = require('child_process').spawn,
                 if (dbs[dbNameOnParam]) {
                     dbs[dbNameOnParam].collection(params.qstring.collection).findOne({ _id: params.qstring.document }, function(err, results) {
                         if (!err) {
+                            if (params.qstring.collection === 'members' && results) {
+                                delete results.password;
+                                delete results.api_key;
+                            }
+                            else if (params.qstring.collection === 'auth_tokens' && results) {
+                                if (results._id) {
+                                    results._id = '***redacted***';
+                                }
+                            }
                             common.returnOutput(params, objectIdCheck(results) || {});
                         }
                         else {
@@ -139,16 +151,17 @@ var spawn = require('child_process').spawn,
             var sort = params.qstring.sort || "{}";
 
             try {
-                sort = JSON.parse(sort);
+                sort = EJSON.parse(sort);
             }
             catch (SyntaxError) {
                 sort = {};
             }
             try {
-                filter = JSON.parse(filter);
+                filter = EJSON.parse(filter);
             }
             catch (SyntaxError) {
-                filter = {};
+                common.returnMessage(params, 400, "Failed to parse query. " + SyntaxError.message);
+                return false;
             }
             if (filter._id && isObjectId(filter._id)) {
                 filter._id = common.db.ObjectID(filter._id);
@@ -157,7 +170,7 @@ var spawn = require('child_process').spawn,
                 filter._id = new RegExp(sSearch);
             }
             try {
-                projection = JSON.parse(projection);
+                projection = EJSON.parse(projection);
             }
             catch (SyntaxError) {
                 projection = {};
@@ -167,15 +180,42 @@ var spawn = require('child_process').spawn,
             }
 
             if (dbs[dbNameOnParam]) {
-                var cursor = dbs[dbNameOnParam].collection(params.qstring.collection).find(filter, { projection });
-                if (Object.keys(sort).length > 0) {
-                    cursor.sort(sort);
+                try {
+                    var cursor = dbs[dbNameOnParam].collection(params.qstring.collection).find(filter, { projection });
+                    if (Object.keys(sort).length > 0) {
+                        cursor.sort(sort);
+                    }
+                }
+                catch (error) {
+                    if (error instanceof MongoInvalidArgumentError && error.message.includes("Collection names must not contain '$'")) {
+                        common.returnMessage(params, 400, "Invalid collection name: Collection names can not contain '$' or other invalid characters");
+                    }
+                    else {
+                        common.returnMessage(params, 500, "An unexpected error occurred.");
+                    }
+                    return false;
                 }
                 try {
                     var total = await cursor.count();
                     var stream = cursor.skip(skip).limit(limit).stream({
                         transform: function(doc) {
-                            return JSON.stringify(objectIdCheck(doc));
+
+                            if (params.qstring.collection === 'members' && doc) {
+                                delete doc.password;
+                                delete doc.api_key;
+                            }
+                            else if (params.qstring.collection === 'auth_tokens' && doc) {
+                                if (doc._id) {
+                                    doc._id = '***redacted***';
+                                }
+                            }
+
+                            try {
+                                return EJSON.stringify(objectIdCheck(doc));
+                            }
+                            catch (SyntaxError) {
+                                return JSON.stringify(objectIdCheck(doc));
+                            }
                         }
                     });
                     var headers = { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' };
@@ -224,7 +264,10 @@ var spawn = require('child_process').spawn,
                 lookup[apps[i]._id + ""] = apps[i].name;
             }
 
-            dbLoadEventsData(params, apps, function(err, eventList, viewList) {
+            dbLoadEventsData(params, apps, function(err) {
+                if (err) {
+                    log.e(err);
+                }
                 async.map(Object.keys(dbs), getCollections, function(error, results) {
                     if (error) {
                         console.error(error);
@@ -247,9 +290,9 @@ var spawn = require('child_process').spawn,
                             var db = { name: name, collections: {} };
                             async.each(results, function(col, done) {
                                 if (col.collectionName.indexOf("system.indexes") === -1 && col.collectionName.indexOf("sessions_") === -1) {
-                                    dbUserHasAccessToCollection(params, col.collectionName, params.qstring.app_id, function(hasAccess) {
+                                    userHasAccess(params, col.collectionName, params.qstring.app_id, function(hasAccess) {
                                         if (hasAccess) {
-                                            ob = parseCollectionName(col.collectionName, lookup, eventList, viewList);
+                                            ob = parseCollectionName(col.collectionName, lookup);
                                             db.collections[ob.pretty] = ob.name;
                                         }
                                         done();
@@ -284,6 +327,18 @@ var spawn = require('child_process').spawn,
                 common.returnMessage(params, 500, "The aggregation pipeline must be of the type array");
             }
             else {
+                var addProjectionAt = 0;
+                if (aggregation[0] && aggregation[0].$match) {
+                    while (aggregation.length > addProjectionAt && aggregation[addProjectionAt].$match) {
+                        addProjectionAt++;
+                    }
+                }
+                if (collection === 'members') {
+                    aggregation.splice(addProjectionAt, 0, {"$project": {"password": 0, "api_key": 0}});
+                }
+                else if (collection === 'auth_tokens') {
+                    aggregation.splice(addProjectionAt, 0, {"$addFields": {"_id": "***redacted***"}});
+                }
                 // check task is already running?
                 taskManager.checkIfRunning({
                     db: dbs[dbNameOnParam],
@@ -333,7 +388,46 @@ var spawn = require('child_process').spawn,
             }
         }
 
-        //console.log(userApps);
+        /**
+        * Wrapper for dbUserHasAccessToCollection.  Checks if user has access to dbViewer plugin
+        * If user has access to dbViewer plugin,  dbUserHasAccessToCollection is called
+        * @param {object} parameters - {@link parameters} object
+        * @param {string} collection - collection will be checked for access
+        * @param {string} appId - appId to which to restrict access
+        * @param {function} callback - callback method includes boolean variable as argument  
+        * @returns {function} returns callback
+         */
+        async function userHasAccess(parameters, collection, appId, callback) {
+            if (typeof appId === "function") {
+                callback = appId;
+                appId = null;
+            }
+            if (parameters.member.global_admin && !appId) {
+                //global admin without app_id restriction just has access to everything
+                return callback(true);
+            }
+
+            if (appId) {
+                if (hasReadRight(FEATURE_NAME, appId, parameters.member)) {
+                    return dbUserHasAccessToCollection(parameters, collection, appId, callback);
+                }
+            }
+            else {
+                var userApps = getUserApps(parameters.member);
+                //go through all apps of user and check if any of them has access to collection
+                var result = await Promise.all(userApps.map(function(id) {
+                    if (hasReadRight(FEATURE_NAME, id, parameters.member)) {
+                        return new Promise(function(resolve) {
+                            dbUserHasAccessToCollection(parameters, collection, id, resolve);
+                        });
+                    }
+                }));
+                return callback(result.some(function(val) {
+                    return val;
+                }));
+            }
+            return callback(false);
+        }
 
         validateUser(params, function() {
             // conditions
@@ -351,7 +445,7 @@ var spawn = require('child_process').spawn,
                     getIndexes();
                 }
                 else {
-                    dbUserHasAccessToCollection(params, params.qstring.collection, function(hasAccess) {
+                    userHasAccess(params, params.qstring.collection, function(hasAccess) {
                         if (hasAccess) {
                             getIndexes();
                         }
@@ -367,7 +461,7 @@ var spawn = require('child_process').spawn,
                     dbGetDocument();
                 }
                 else {
-                    dbUserHasAccessToCollection(params, params.qstring.collection, function(hasAccess) {
+                    userHasAccess(params, params.qstring.collection, function(hasAccess) {
                         if (hasAccess) {
                             dbGetDocument();
                         }
@@ -381,7 +475,7 @@ var spawn = require('child_process').spawn,
             else if (isContainDb && params.qstring.aggregation) {
                 if (params.member.global_admin) {
                     try {
-                        let aggregation = JSON.parse(params.qstring.aggregation);
+                        let aggregation = EJSON.parse(params.qstring.aggregation);
                         aggregate(params.qstring.collection, aggregation);
                     }
                     catch (e) {
@@ -390,10 +484,10 @@ var spawn = require('child_process').spawn,
                     }
                 }
                 else {
-                    dbUserHasAccessToCollection(params, params.qstring.collection, function(hasAccess) {
+                    userHasAccess(params, params.qstring.collection, function(hasAccess) {
                         if (hasAccess) {
                             try {
-                                let aggregation = JSON.parse(params.qstring.aggregation);
+                                let aggregation = EJSON.parse(params.qstring.aggregation);
                                 aggregate(params.qstring.collection, aggregation);
                             }
                             catch (e) {
@@ -413,7 +507,7 @@ var spawn = require('child_process').spawn,
                     dbGetCollection();
                 }
                 else {
-                    dbUserHasAccessToCollection(params, params.qstring.collection, function(hasAccess) {
+                    userHasAccess(params, params.qstring.collection, function(hasAccess) {
                         if (hasAccess) {
                             dbGetCollection();
                         }
@@ -426,7 +520,7 @@ var spawn = require('child_process').spawn,
             else {
                 if (params.member.global_admin) {
                     var query = params.qstring.app_id ? { "_id": common.db.ObjectID(params.qstring.app_id) } : {};
-                    common.db.collection('apps').find(query).toArray(function(err, apps) {
+                    common.db.collection('apps').find(query, {"name": 1, "_id": 1}).toArray(function(err, apps) {
                         if (err) {
                             console.error(err);
                         }
@@ -526,7 +620,7 @@ var spawn = require('child_process').spawn,
 
     }
 
-    var parseCollectionName = function parseCollectionName(name, apps, events, views) {
+    var parseCollectionName = function parseCollectionName(name, apps) {
         var pretty = name;
 
         let isEvent = false;
@@ -541,17 +635,11 @@ var spawn = require('child_process').spawn,
             isEvent = true;
         }
         else if (name.indexOf("app_viewdata") === 0) {
+            isView = true;
 
-            let hash = name.substring(12);
-            if (views["app_viewdata" + hash]) {
-                isView = true;
-            }
         }
         if (isView) {
-            let hash = name.substring(12);
-            if (views["app_viewdata" + hash]) {
-                pretty = name.replace(hash, views["app_viewdata" + hash]);
-            }
+            pretty = "app_viewdata" + getCollectionName(name);
         }
         else if (!isEvent) {
             for (let i in apps) {
@@ -567,7 +655,7 @@ var spawn = require('child_process').spawn,
                 pretty = name;
             }
             else {
-                const targetEntry = events[eventHash];
+                var targetEntry = getCollectionName(eventHash);
                 if (!_.isUndefined(targetEntry)) {
                     pretty = name.replace(eventHash, targetEntry);
                 }

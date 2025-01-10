@@ -1,8 +1,49 @@
-/* global Vue, $ */
+/* global Vue CountlyHelpers countlyCMS $ */
 
 (function(countlyVue) {
 
     var countlyBaseComponent = countlyVue.components.BaseComponent;
+
+    Vue.component("cly-guide", countlyBaseComponent.extend({
+        props: {
+            tooltip: {
+                type: Object,
+                default: function() {
+                    return {
+                        description: "",
+                        placement: "bottom-end"
+                    };
+                }
+            },
+            testId: {
+                type: String,
+                default: "cly-guide-test-id"
+            }
+        },
+        data: function() {
+            return {
+                enableGuides: CountlyHelpers.isPluginEnabled('guides')
+            };
+        },
+        created: function() {
+            var self = this;
+            if (this.enableGuides) {
+                countlyCMS.fetchEntry("server-guide-config").then(function(config) {
+                    self.enableGuides = (config && config.data && config.data[0] && config.data[0].enableGuides) || false;
+                });
+            }
+        },
+        template: `
+            <div>\
+                <template v-if="enableGuides">\
+                    <view-guide :test-id="testId" :tooltip="tooltip"></view-guide>\
+                </template>\
+                <template v-else-if="tooltip && tooltip.description">\
+                    <cly-tooltip-icon :tooltip="tooltip.description" icon="ion ion-help-circled" style="margin-left:8px" :placement="tooltip.placement"></cly-tooltip-icon>\
+                </template>\
+            </div>\
+        `
+    }));
 
     Vue.component("cly-header", countlyBaseComponent.extend({
         props: {
@@ -13,12 +54,17 @@
                     return null;
                 },
             },
+            testId: {
+                type: String,
+                default: "header-title"
+            },
             headerClass: {
                 type: Object,
                 default: function() {
                     return {};
                 }
-            }
+            },
+            tooltip: Object
         },
         computed: {
             slotHeaderTop: function() {
@@ -65,11 +111,12 @@
                             </div>\
                         </template> \
                         <div :class="[midLevelClasses]">\
-                            <div class="bu-level-left bu-is-flex-shrink-1" style="min-width: 0;"> \
+                            <div class="bu-level-left bu-is-flex-shrink-1" :data-test-id="testId" style="min-width: 0;"> \
                                 <template> \
                                     <slot name="header-left">\
                                         <div class="bu-level-item">\
-                                            <h2>{{title}}</h2>\
+                                            <h2 class="bu-mr-2">{{title}}</h2>\
+                                            <cly-guide v-if="title" :test-id="testId" :tooltip="tooltip"></cly-guide>\
                                         </div>\
                                     </slot>\
                                 </template> \
@@ -88,15 +135,39 @@
                 </div>'
     }));
 
+    var PersistentNotifications = {
+        template: '<div class="persistent-notifications" :class="additionalClasses">\
+            <cly-notification v-for="notification in persistentNotifications" :key="notification.id" :closable="false" :text="notification.text" :color="notification.color"></cly-notification>\
+        </div>',
+        computed: {
+            persistentNotifications: function() {
+                return this.$store.state.countlyCommon.persistentNotifications;
+            },
+            additionalClasses: function() {
+                var classes = {};
+                if (this.persistentNotifications.length > 0) {
+                    classes["bu-mb-5"] = true;
+                }
+
+                return classes;
+            }
+        },
+        store: countlyVue.vuex.getGlobalStore(),
+    };
+
     //Every view has a single cly-main component which encapsulates all other components/dom elements
     //This component is a single column full width component
     //A main component can have multiple sections
     Vue.component("cly-main", countlyBaseComponent.extend({
         template: '<div class="cly-vue-main bu-columns bu-is-gapless bu-is-centered">\
                         <div class="bu-column bu-is-full" style="max-width: 1920px">\
+                            <PersistentNotifications></PersistentNotifications>\
                             <slot></slot>\
                         </div>\
-                    </div>'
+                    </div>',
+        components: {
+            PersistentNotifications: PersistentNotifications
+        }
     }));
 
     //Each cly-section should mark a different component within the cly-main component

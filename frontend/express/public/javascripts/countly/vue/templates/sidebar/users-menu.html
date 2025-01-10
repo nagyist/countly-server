@@ -31,7 +31,7 @@
                                     backgroundPosition: item.member.image.position + 'px',
                                     backgroundSize: '600px 60px'
                                 }">
-                            <span class="cly-vue-sidebar__user-initials has-ellipsis">{{item.member.image.initials}}</span>
+                            <span class="cly-vue-sidebar__user-initials has-ellipsis" data-test-id="sidebar-menuoptions-myprofile">{{item.member.image.initials}}</span>
                         </div>
                     </div>
                 </div>
@@ -42,7 +42,7 @@
                         <div class="cly-vue-sidebar__user-api">
                             <p class="has-ellipsis">{{i18nM('sidebar.api_key')}}</p>
                             <p id="user_api_key_item">
-                                <i class="cly-icon-copy cly-icon-btn"></i>
+                                <i class="cly-icon-copy cly-icon-btn"  v-clipboard:copy="item.member.api_key" v-clipboard:success="onCopy" v-clipboard:error="onError"></i>
                                 <input :value="item.member.api_key" readonly type="text" onclick="select()" class="has-ellipsis bu-px-0"
                                     v-clipboard:copy="item.member.api_key"
                                     v-clipboard:success="onCopy"
@@ -157,7 +157,7 @@
                         <i class="ion-android-textsms"></i>
                     </div>
                     <div class="bu-level-item">
-                        <a href="https://support.count.ly/hc/en-us/community/topics/360001464272-Feature-Requests" target="_blank">
+                        <a href="https://discord.com/channels/1088398296789299280/1088721958218248243" target="_blank">
                             <div>{{i18nM('common.feature-request')}}</div>
                         </a>
                     </div>

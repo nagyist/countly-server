@@ -7,11 +7,19 @@ var AppCarrierView = countlyVue.views.create({
         };
     },
     mounted: function() {
-        this.$store.dispatch('countlyAppCarrier/fetchAll');
+        this.$store.dispatch('countlyAppCarrier/fetchAll', true);
     },
     methods: {
-        refresh: function() {
-            this.$store.dispatch('countlyAppCarrier/fetchAll');
+        refresh: function(force) {
+            if (force) {
+                this.$store.dispatch('countlyAppCarrier/fetchAll', true);
+            }
+            else {
+                this.$store.dispatch('countlyAppCarrier/fetchAll', false);
+            }
+        },
+        dateChanged: function() {
+            this.refresh(true);
         },
         numberFormatter: function(row, col, value) {
             return countlyCommon.formatNumber(value, 0);
@@ -76,7 +84,13 @@ var AppCarrierView = countlyVue.views.create({
             };
         },
         appCarrierRows: function() {
-            return this.appCarrier.table || [];
+            if (this.appCarrier && this.appCarrier.table) {
+                this.appCarrier.table.forEach(function(row) {
+                    row.carriers = countlyCommon.unescapeHtml(row.carriers);
+                });
+                return this.appCarrier.table;
+            }
+            return [];
         },
         topDropdown: function() {
             if (this.externalLinks && Array.isArray(this.externalLinks) && this.externalLinks.length > 0) {
@@ -105,6 +119,7 @@ countlyVue.container.registerTab("/analytics/technology", {
     permission: "core",
     title: CV.i18n('carriers.title'),
     route: "#/analytics/technology/carriers",
+    dataTestId: "technology-carriers",
     component: AppCarrierView,
     vuex: [{
         clyModel: countlyAppCarrier

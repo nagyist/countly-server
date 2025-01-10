@@ -278,63 +278,80 @@
 
             if (countlyAuth.validateRead('drill') && typeof countlyDrillMeta !== "undefined") {
                 var crashMeta = countlyDrillMeta.getContext("[CLY]_crash");
-                var getFilterValues = function(segmentationKey) {
+                var getRemoteFilterValues = function(segmentationKey) {
                     return function() {
-                        return crashMeta.getFilterValues("sg." + segmentationKey).map(function(value) {
-                            var name = (segmentationKey === "orientation") ? jQuery.i18n.prop("crashes.filter." + segmentationKey + "." + value) : value;
-                            return {name: name, value: value};
+                        return new Promise(function(resolve) {
+                            crashMeta.getBigListMetaData('sg.' + segmentationKey, '', function(vals) {
+                                resolve(vals.map(function(item) {
+                                    var name = (segmentationKey === "orientation") ? jQuery.i18n.prop("crashes.filter." + segmentationKey + "." + item) : item;
+                                    return {label: name, name: name, value: item};
+                                }));
+                            });
                         });
                     };
                 };
 
                 var self = this;
-                var getAppVersions = function() {
-                    // Get app versions from vuex because drill meta is not always up to date
-                    return self.$store.getters["countlyCrashes/overview/appVersions"].map(function(version) {
-                        var properVersion = version.replace(/:/g, ".");
-                        return { name: properVersion, value: properVersion };
+                var getAppVersions = function(query) {
+                    return new Promise(function(resolve) {
+                        // Get app versions from vuex because drill meta is not always up to date
+                        resolve(self.$store.getters["countlyCrashes/overview/appVersions"].reduce(function(acc, version) {
+                            var properVersion = version.replace(/:/g, ".");
+                            if (!query || properVersion.indexOf(query) > -1) {
+                                acc.push({ name: properVersion, value: properVersion });
+                            }
+
+                            return acc;
+                        }, []));
                     });
                 };
 
-                crashMeta.initialize().then(function() {
-                    if (window.countlyQueryBuilder) {
-                        filterProperties.push({
-                            id: "app_version",
-                            name: "App Version",
-                            type: countlyQueryBuilder.PropertyType.LIST,
-                            group: "Detail",
-                            getValueList: getAppVersions
-                        });
-                        filterProperties.push({
-                            id: "opengl",
-                            name: "OpenGL Version",
-                            type: countlyQueryBuilder.PropertyType.LIST,
-                            group: "Detail",
-                            getValueList: getFilterValues("opengl")
-                        });
-                        filterProperties.push({
-                            id: "orientation",
-                            name: "Orientation",
-                            type: countlyQueryBuilder.PropertyType.LIST,
-                            group: "Detail",
-                            getValueList: getFilterValues("orientation")
-                        });
-                        filterProperties.push({
-                            id: "os",
-                            name: "Platform",
-                            type: countlyQueryBuilder.PropertyType.LIST,
-                            group: "Detail",
-                            getValueList: getFilterValues("os")
-                        });
-                        filterProperties.push({
-                            id: "cpu",
-                            name: "CPU",
-                            type: countlyQueryBuilder.PropertyType.LIST,
-                            group: "Detail",
-                            getValueList: getFilterValues("cpu")
-                        });
-                    }
-                });
+                crashMeta.initialize();
+
+                if (window.countlyQueryBuilder) {
+                    filterProperties.push({
+                        id: "app_version_list",
+                        name: "App Version",
+                        type: countlyQueryBuilder.PropertyType.LIST,
+                        group: "Detail",
+                        searchRemoteList: getAppVersions,
+                    });
+                    filterProperties.push({
+                        id: "latest_version",
+                        name: "Latest App Version",
+                        type: countlyQueryBuilder.PropertyType.LIST,
+                        group: "Detail",
+                        searchRemoteList: getAppVersions,
+                    });
+                    filterProperties.push({
+                        id: "opengl",
+                        name: "OpenGL Version",
+                        type: countlyQueryBuilder.PropertyType.LIST,
+                        group: "Detail",
+                        searchRemoteList: getRemoteFilterValues('opengl')
+                    });
+                    filterProperties.push({
+                        id: "orientation",
+                        name: "Orientation",
+                        type: countlyQueryBuilder.PropertyType.LIST,
+                        group: "Detail",
+                        searchRemoteList: getRemoteFilterValues('orientation')
+                    });
+                    filterProperties.push({
+                        id: "os",
+                        name: "Platform",
+                        type: countlyQueryBuilder.PropertyType.LIST,
+                        group: "Detail",
+                        searchRemoteList: getRemoteFilterValues('os')
+                    });
+                    filterProperties.push({
+                        id: "cpu",
+                        name: "CPU",
+                        type: countlyQueryBuilder.PropertyType.LIST,
+                        group: "Detail",
+                        searchRemoteList: getRemoteFilterValues('cpu')
+                    });
+                }
             }
 
             return {
@@ -402,7 +419,7 @@
                     new countlyQueryBuilder.RowRule({
                         name: "cly.crashes.no-regex",
                         selector: function(row) {
-                            return row.property && row.property.id !== "error";
+                            return row.property && !["app_version_list", "error", "latest_version"].includes(row.property.id);
                         },
                         actions: [new countlyQueryBuilder.RowAction({
                             id: "disallowOperator",
@@ -441,9 +458,18 @@
             crashgroupsFilter: {
                 set: function(newValue) {
                     var query = {};
+                    var tmpQuery = {};
 
                     if (newValue.query) {
-                        query = countlyCrashes.modifyExistsQueries(newValue.query);
+                        tmpQuery = countlyCrashes.modifyQueries(newValue.query);
+                        query = countlyCrashes.modifyExistsQueries(tmpQuery);
+                    }
+
+                    if (newValue.query) {
+                        app.navigate("#/crashes/filter/" + JSON.stringify({ query: newValue.query }));
+                    }
+                    else {
+                        app.navigate("#/crashes", true);
                     }
 
                     return Promise.all([
@@ -510,16 +536,42 @@
                 var appType = countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID].type;
                 return appType === 'mobile' ? CV.i18n('crashes.crash-group') : CV.i18n('crashes.error');
             },
-            isLoading: function() {
-                return this.$store.getters['countlyCrashes/overview/isLoading'];
+            singleAppVersionFilter: function() {
+                var currentFilter = this.$store.getters["countlyCrashes/overview/crashgroupsFilter"];
+
+                if (currentFilter.query) {
+                    if (currentFilter.query.app_version_list && currentFilter.query.app_version_list.$in && Array.isArray(currentFilter.query.app_version_list.$in) && currentFilter.query.app_version_list.$in.length === 1) {
+                        return currentFilter.query.app_version_list.$in[0];
+                    }
+                }
+
+                return '';
             },
+            isLoading: function() {
+                return this.$store.getters["countlyCrashes/overview/isLoading"];
+            },
+            loading: function() {
+                return this.$store.getters["countlyCrashes/overview/loading"];
+            }
         },
         methods: {
-            refresh: function() {
-                return Promise.all([
-                    this.$store.dispatch("countlyCrashes/pasteAndFetchCrashgroups", {query: JSON.stringify(this.crashgroupsFilter.query)}),
-                    this.$store.dispatch("countlyCrashes/overview/refresh")
-                ]);
+            refresh: function(force) {
+                if (this.$refs && this.$refs.dataTable && this.$refs.dataTable.externalParams) {
+                    this.$refs.dataTable.externalParams.skipLoading = true;
+                }
+                if (this.$refs && this.$refs.crashesAutoRefreshToggle && this.$refs.crashesAutoRefreshToggle.autoRefresh) {
+                    var query = {};
+                    var tmpQuery = {};
+                    if (this.crashgroupsFilter.query) {
+                        tmpQuery = countlyCrashes.modifyQueries(this.crashgroupsFilter.query);
+                        query = countlyCrashes.modifyExistsQueries(tmpQuery);
+                    }
+
+                    return Promise.all([
+                        this.$store.dispatch("countlyCrashes/pasteAndFetchCrashgroups", {query: JSON.stringify(query)}),
+                        this.$store.dispatch("countlyCrashes/overview/refresh", force)
+                    ]);
+                }
             },
             handleSelectionChange: function(selectedRows) {
                 this.$data.selectedCrashgroups = selectedRows.map(function(row) {
@@ -575,10 +627,36 @@
                         }
                     });
                 }
-            }
+            },
+            appVersionSort: function(item1, item2) {
+                if (item1.latest_version_for_sort && item2.latest_version_for_sort) {
+                    return item1.latest_version_for_sort.localeCompare(item2.latest_version_for_sort);
+                }
+
+                return item1.latest_version.localeCompare(item2.latest_version);
+            },
+            occurrenceSort: function(item1, item2) {
+                if (this.singleAppVersionFilter.length) {
+                    var appVersion = this.singleAppVersionFilter.replace(/\./g, ':');
+
+                    return item1.app_version[appVersion] - item2.app_version[appVersion];
+                }
+
+                return item1.reports - item2.reports;
+            },
         },
         beforeCreate: function() {
-            return this.$store.dispatch("countlyCrashes/overview/refresh");
+            var query = {};
+            var tmpQuery = {};
+            if (this.$route.params && this.$route.params.query) {
+                tmpQuery = countlyCrashes.modifyQueries(this.$route.params.query.query);
+                query = countlyCrashes.modifyExistsQueries(tmpQuery);
+
+                this.$store.dispatch("countlyCrashes/overview/setCrashgroupsFilter", this.$route.params.query);
+                this.$store.dispatch("countlyCrashes/pasteAndFetchCrashgroups", {query: JSON.stringify(query)});
+            }
+
+            this.$store.dispatch("countlyCrashes/overview/refresh", true);
         }
     });
 
@@ -590,7 +668,7 @@
                 {
                     namespace: "crashes",
                     mapping: {
-                        overview: "crashes/templates/overview.html"
+                        overview: "/crashes/templates/overview.html"
                     }
                 },
                 "/drill/templates/query.builder.v2.html",
@@ -653,7 +731,11 @@
                 userProfilesEnabled: countlyGlobal.plugins.includes("users"),
                 hasUserPermission: countlyAuth.validateRead('users'),
                 showSymbolicated: false,
-                activeThreadPanels: []
+                activeThreadPanels: [],
+                symbolicationErrorDialog: {
+                    show: false,
+                    msg: '',
+                },
             };
         },
         computed: {
@@ -812,7 +894,20 @@
                     this.crashesBeingSymbolicated.push(crash._id);
                     this.$store.dispatch("countlyCrashes/crashgroup/symbolicate", crash)
                         .then(function() {
+                            CountlyHelpers.notify({
+                                title: CV.i18n("crash_symbolication.symbolication-processed"),
+                                message: CV.i18n("crash_symbolication.symbolication-processed")
+                            });
                             self.refresh();
+                        })
+                        .catch(function(err) {
+                            if (err.responseJSON) {
+                                self.symbolicationErrorDialog.msg = err.responseJSON.result;
+                            }
+                            else {
+                                self.symbolicationErrorDialog.msg = err.statusText;
+                            }
+                            self.symbolicationErrorDialog.show = true;
                         })
                         .finally(function() {
                             self.crashesBeingSymbolicated = self.crashesBeingSymbolicated.filter(function(cid) {
@@ -1008,7 +1103,7 @@
                     item[CV.i18n('crashes.device').toUpperCase()] = tableData[i].device;
                     item[CV.i18n('crashes.app_version').toUpperCase()] = tableData[i].app_version;
                     item[CV.i18n('crashes.user').toUpperCase()] = tableData[i].user && tableData[i].user.name || tableData[i].uid;
-                    item[CV.i18n('crashes.crashed').toUpperCase()] = tableData[i].name;
+                    item[CV.i18n('crashes.detail').toUpperCase()] = tableData[i].name;
 
                     table.push(item);
                 }
@@ -1038,7 +1133,7 @@
                 {
                     namespace: "crashes",
                     mapping: {
-                        crashgroup: "crashes/templates/crashgroup.html"
+                        crashgroup: "/crashes/templates/crashgroup.html"
                     }
                 }
             ]
@@ -1096,7 +1191,7 @@
 
                 if (this.symbolicationEnabled) {
                     promises.push(new Promise(function(resolve, reject) {
-                        countlyCrashSymbols.fetchSymbols(true)
+                        countlyCrashSymbols.fetchSymbols(false)
                             .then(function(fetchSymbolsResponse) {
                                 self.symbols = {};
 
@@ -1137,7 +1232,7 @@
                 {
                     namespace: "crashes",
                     mapping: {
-                        "binary-images": "crashes/templates/binary-images.html"
+                        "binary-images": "/crashes/templates/binary-images.html"
                     }
                 }
             ]
@@ -1209,7 +1304,8 @@
                         "value": value,
                         "info": getUs[k].info,
                         "trend": data[getUs[k].prop].trend,
-                        "change": data[getUs[k].prop].change
+                        "change": data[getUs[k].prop].change,
+                        "isEstimate": data[getUs[k].prop].isEstimate || false,
                     });
                 }
 
@@ -1272,14 +1368,17 @@
                 return {
                     uid: '',
                     userCrashesData: [],
-                    title: CV.i18n('crashes.unresolved-crashes')
+                    title: CV.i18n('crashes.unresolved-crashes'),
+                    isLoading: false
                 };
             },
-            beforeCreate: function() {
+            created: function() {
                 var self = this;
+                self.isLoading = true;
                 this.uid = this.$route.params.uid;
                 countlyCrashes.userCrashes(this.uid)
                     .then(function(res) {
+                        self.isLoading = false;
                         if (res) {
                             self.userCrashesData = res.aaData.map(function(data) {
                                 return Object.assign(data, { link: '/dashboard#/' + countlyCommon.ACTIVE_APP_ID + '/crashes/' + data.id});
@@ -1290,7 +1389,11 @@
         })
     });
 
-    app.addMenu("improve", {code: "crashes", text: "crashes.title", icon: '<div class="logo ion-alert-circled"></div>', priority: 10});
+    if (app.configurationsView) {
+        app.configurationsView.registerInput("crashes.smart_regexes", {input: "el-input", attrs: {type: "textarea", rows: 5}});
+    }
+
+    app.addMenu("improve", {code: "crashes", permission: FEATURE_NAME, text: "crashes.title", icon: '<div class="logo ion-alert-circled"></div>', priority: 10});
     app.addSubMenu("crashes", {code: "crash", permission: FEATURE_NAME, url: "#/crashes", text: "sidebar.dashboard", priority: 10});
 
     if (app.configurationsView) {
@@ -1302,10 +1405,42 @@
                 {value: 'stacktrace', label: CV.i18n("crashes.grouping_strategy.stacktrace")}
             ]
         });
+
+        app.addAppManagementInput("crashes", CV.i18n("crashes.title"),
+            {
+                "crashes.smart_preprocessing": {input: "el-switch", attrs: {}, defaultValue: true},
+                "crashes.smart_regexes": {input: "el-input", attrs: {type: "textarea", rows: 5}},
+                "crashes.grouping_strategy": {
+                    input: "el-select",
+                    attrs: {},
+                    list: [
+                        {value: 'error_and_file', label: CV.i18n("crashes.grouping_strategy.error_and_file")},
+                        {value: 'stacktrace', label: CV.i18n("crashes.grouping_strategy.stacktrace")}
+                    ]
+                }
+            });
     }
 
     app.route("/crashes", "crashes", function() {
         this.renderWhenReady(getOverviewView());
+    });
+
+    app.route("/crashes/filter/*query", "crashes", function(rawQuery) {
+        var parsedQuery = null;
+
+        try {
+            parsedQuery = JSON.parse(rawQuery);
+        }
+        catch (err) {
+            // no need to do anything, default parsedQuery is null
+        }
+
+        var view = getOverviewView();
+        view.params = {
+            query: parsedQuery
+        };
+
+        this.renderWhenReady(view);
     });
 
     app.route("/crashes/:group", "crashgroup", function(group) {

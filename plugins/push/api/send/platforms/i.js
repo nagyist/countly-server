@@ -15,19 +15,19 @@ const key = 'i';
 
 /**
  * Extract token & field from token_session request
- * 
+ *
  * @param {object} qstring request params
  * @returns {string[]|undefined} array of [platform, field, token] if qstring has platform-specific token data, undefined otherwise
  */
 function extractor(qstring) {
     if (qstring.ios_token !== undefined && qstring.test_mode in FIELDS) {
-        return [key, FIELDS[qstring.test_mode], qstring.ios_token, util.hashInt(qstring.ios_token)];
+        return [key, FIELDS[qstring.test_mode], qstring.ios_token, util.hash(qstring.ios_token)];
     }
 }
 
 /**
  * Make an estimated guess about request platform
- * 
+ *
  * @param {string} userAgent user-agent header
  * @returns {string} platform key if it looks like request made by this platform
  */
@@ -67,7 +67,7 @@ const CREDS = {
     'apn_universal': class CertCreds extends Creds {
         /**
          * Validation scheme of this class
-         * 
+         *
          * @returns {object} validateArgs scheme
          */
         static get scheme() {
@@ -86,7 +86,7 @@ const CREDS = {
 
         /**
          * Get TLS options
-         * 
+         *
          * @returns {object} with cert & key keys set to PEM-encoded certificate & private key
          */
         get tls() {
@@ -108,7 +108,7 @@ const CREDS = {
 
         /**
          * Check credentials for correctness, throw PushError otherwise
-         * 
+         *
          * @throws PushError in case the check fails
          * @returns {undefined}
          */
@@ -171,10 +171,10 @@ const CREDS = {
                                 for (var i = 0; i < tpks.length; i++) {
                                     for (var j = 0; j < tpks.length; j++) {
                                         if (i !== j && tpks[j].indexOf(tpks[i]) === 0) {
-                                            if (topics.indexOf(tpks[i]) === -1 && tpks[i] && tpks[i].indexOf('.') !== -1) {
+                                            if (topics.indexOf(tpks[i]) === -1 && tpks[i] && tpks[i].indexOf('.') !== -1 && tpks[i].indexOf(".") !== 0) {
                                                 topics.push(tpks[i]);
                                             }
-                                            if (topics.indexOf(tpks[j]) === -1 && tpks[j] && tpks[j].indexOf('.') !== -1) {
+                                            if (topics.indexOf(tpks[j]) === -1 && tpks[j] && tpks[j].indexOf('.') !== -1 && tpks[j].indexOf(".") !== 0) {
                                                 topics.push(tpks[j]);
                                             }
                                         }
@@ -228,7 +228,7 @@ const CREDS = {
 
         /**
          * "View" json, that is some truncated/simplified version of credentials that is "ok" to display
-         * 
+         *
          * @returns {object} json without sensitive information
          */
         get view() {
@@ -252,7 +252,7 @@ const CREDS = {
 
         /**
          * Validation scheme of this class
-         * 
+         *
          * @returns {object} validateArgs scheme
          */
         static get scheme() {
@@ -268,7 +268,7 @@ const CREDS = {
 
         /**
          * Check credentials for correctness, throw PushError otherwise
-         * 
+         *
          * @throws PushError in case the check fails
          * @returns {undefined}
          */
@@ -298,12 +298,13 @@ const CREDS = {
                 return ['Not a private key in P8 format in base64-encoded string'];
             }
 
-            this._data.hash = FORGE.md.sha256.create().update(this._data.key).digest().toHex();
+            const message = this._data.key + this._data.bundle + this._data.keyid + this._data.team;
+            this._data.hash = FORGE.md.sha256.create().update(message).digest().toHex();
         }
 
         /**
          * "View" json, that is some truncated/simplified version of credentials that is "ok" to display
-         * 
+         *
          * @returns {object} json without sensitive information
          */
         get view() {
@@ -343,7 +344,7 @@ const CREDS = {
 
 /**
  * Create new empty payload for the note object given
- * 
+ *
  * @param {Note} note Note object
  * @returns {object} empty payload object
  */
@@ -368,7 +369,7 @@ const fields = [
  */
 const map = {
     /**
-     * Sends sound 
+     * Sends sound
      * @param {Template} t template
      * @param {string} sound sound string
      */
@@ -379,7 +380,7 @@ const map = {
     },
 
     /**
-     * Sends badge 
+     * Sends badge
      * @param {Template} t template
      * @param {number} badge badge (0..N)
      */
@@ -390,7 +391,7 @@ const map = {
     /**
      * Sends buttons
      * !NOTE! buttons & messagePerLocale are inter-dependent as buttons urls/titles are locale-specific
-     * 
+     *
      * @param {Template} t template
      * @param {number} buttons buttons (1..2)
      */
@@ -403,7 +404,7 @@ const map = {
 
     /**
      * Set title string
-     * 
+     *
      * @param {Template} t template
      * @param {String} title title string
      */
@@ -416,7 +417,7 @@ const map = {
 
     /**
      * Set message string
-     * 
+     *
      * @param {Template} t template
      * @param {String} message message string
      */
@@ -429,7 +430,7 @@ const map = {
 
     /**
      * Send content-available. It's set automatically when there's no alert and no sound.
-     * 
+     *
      * @param {Template} template template
      * @param {boolean} ca contentAvailable of the Note
      */
@@ -441,7 +442,7 @@ const map = {
 
     /**
      * Send notification-tap url
-     * 
+     *
      * @param {Template} template template
      * @param {string} url on-tap url
      */
@@ -452,7 +453,7 @@ const map = {
     /**
      * Send media (picture, video, gif, etc) along with the message.
      * Sets mutable-content in order for iOS extension to be run.
-     * 
+     *
      * @param {Template} template template
      * @param {string} media attached media url
      */
@@ -463,7 +464,7 @@ const map = {
 
     /**
      * Sends custom data along with the message
-     * 
+     *
      * @param {Template} template template
      * @param {Object} data data to be sent
      */
@@ -473,7 +474,7 @@ const map = {
 
     /**
      * Sends user props along with the message
-     * 
+     *
      * @param {Template} template template
      * @param {[string]} extras extra user props to be sent
      * @param {Object} data personalization
@@ -495,7 +496,7 @@ const map = {
 
     /**
      * Sends platform specific fields
-     * 
+     *
      * @param {Template} template template
      * @param {object} specific platform specific props to be sent
      */
@@ -504,6 +505,9 @@ const map = {
             if (specific.subtitle) {
                 template.result.aps.alert = template.result.aps.alert || {};
                 template.result.aps.alert.subtitle = specific.subtitle;
+            }
+            if (specific.setContentAvailable) {
+                template.result.aps["content-available"] = 1;
             }
         }
     },
@@ -549,6 +553,8 @@ class APN extends Base {
             ':method': 'POST',
             ':scheme': 'https',
             ':authority': authority,
+            // this is being added before the actual request depending on weather message have setContentAvailable
+            // "apns-priority": 5,
             [HTTP2.sensitiveHeaders]: ['authorization', ':path', 'apns-id', 'apns-expiration', 'apns-collapse-id']
         };
         this.headersSecondWithToken = token => {
@@ -568,7 +574,7 @@ class APN extends Base {
 
     /**
      * Get template by message id, create if none exists
-     * 
+     *
      * @param {string} id message id
      * @param {map} map platform mapping object
      * @returns {Template} template instance
@@ -580,7 +586,7 @@ class APN extends Base {
 
     /**
      * Send push notifications
-     * 
+     *
      * @param {Object[]} pushesData pushes to send
      * @param {integer} length number of bytes in data
      * @returns {Promise} sending promise
@@ -607,7 +613,7 @@ class APN extends Base {
                 one = Math.ceil(bytes / pushes.length),
                 /**
                  * Get an error for given code & message, create it if it doesn't exist yet
-                 * 
+                 *
                  * @param {number} code error code
                  * @param {string} message error message
                  * @returns {SendError} error instance
@@ -660,7 +666,21 @@ class APN extends Base {
                 }
 
                 let content = this.template(p.m).compile(p),
-                    stream = this.session.request(this.headersSecondWithToken(p.t)),
+                    reqHeaders = self.headersSecondWithToken(p.t);
+                // find if we need to add the priority header (check if content-available set)
+                delete reqHeaders["apns-priority"];
+                const message = self.messages[p.m];
+                if (message && Array.isArray(message.contents)) {
+                    const contentItem = message.contents.find(cont => Array.isArray(cont.specific));
+                    if (contentItem) {
+                        const obj = contentItem.specific.find(cont => cont.setContentAvailable !== undefined);
+                        if (obj && obj.setContentAvailable) {
+                            reqHeaders["apns-priority"] = 5;
+                        }
+                    }
+                }
+                // =======0========000=================0========000=================0========0
+                let stream = this.session.request(reqHeaders),
                     status,
                     data = '';
                 stream.on('error', err => {
@@ -688,7 +708,8 @@ class APN extends Base {
                     status = headers[':status'];
                     // self.log.d('%d: status %d: %j', i, status, self.session.state);
                     if (status === 200) {
-                        oks.push(p._id);
+                        const apnsUniqueId = headers["apns-unique-id"];
+                        oks.push({ p: p._id, r: apnsUniqueId });
                         stream.destroy();
                         streamDone();
                     }
@@ -767,7 +788,7 @@ class APN extends Base {
 
     /**
      * Connect
-     * 
+     *
      * @param {Object[]|undefined} messages messages array
      */
     async connect(messages) {
@@ -843,7 +864,7 @@ class APN extends Base {
 
     /**
      * Ensure connection to proxy server
-     * 
+     *
      * @param {string} host APN hostname
      * @param {int} port APN port
      * @param {function} callback callback to call in the end, first param is error
@@ -873,7 +894,7 @@ class APN extends Base {
 
     /**
      * Gracefully shutdown the worker
-     * 
+     *
      * @param {Error} error optional error
      * @param {function} callback callback to call once done destroying
      */

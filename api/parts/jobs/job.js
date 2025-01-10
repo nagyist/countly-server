@@ -16,7 +16,8 @@ const STATUS = {
         CANCELLED: 3,
         ABORTED: 4,
         PAUSED: 5,
-        WAITING: 6
+        WAITING: 6,
+        SUSPENDED: 7
     },
     STATUS_MAP = {
         0: "SCHEDULED",
@@ -25,7 +26,8 @@ const STATUS = {
         3: "CANCELLED",
         4: "ABORTED",
         5: "PAUSED",
-        6: "WAITING"
+        6: "WAITING",
+        7: "SUSPENDED"
     },
     ERROR = {
         CRASH: 'crash',
@@ -252,8 +254,32 @@ class Job extends EventEmitter {
 
             this._json.next = next.getTime();
         }
+        if (this.name !== "alerts:monitor") {
+            //check if any job already scheduled or running
+            let query = {
+                status: {"$in": [STATUS.SCHEDULED, STATUS.RUNNING]},
+                name: this.name,
+            };
+            if (this._id) {
+                query._id = {$ne: this._id};
+            }
+            var self = this;
+            return new Promise((resolve, reject) => {
+                Job.findMany(this.db(), query).then(existing => {
+                    if (existing && existing.length) {
+                        log.d('Job already scheduled or running: %j', existing);
+                        this._json.status = STATUS.CANCELLED; //set this as cancelled now as we have other scheduled
+                    }
+                    else {
+                        self._save().then(resolve, reject);
+                    }
 
-        return this._save();
+                });
+            });
+        }
+        else {
+            return this._save();
+        }
     }
 
     /**
@@ -512,8 +538,10 @@ class Job extends EventEmitter {
             // delete query.next;
         }
 
+        // if scheduled or suspended job exists, do not insert, skip it
+        query.status = {$in: [query.status, STATUS.SUSPENDED]};
         let existing = await Job.findMany(this.db(), query);
-        if (existing.length === 1) {
+        if (existing.length === 1 && (existing[0].schedule && existing[0].schedule === this._json.schedule)) {
             log.i('No need for replace of %s (%j): existing job %j', this.name, this.data, existing[0]);
             this._json = existing[0];
             return existing[0];

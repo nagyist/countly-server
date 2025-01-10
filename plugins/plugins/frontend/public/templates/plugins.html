@@ -1,15 +1,14 @@
 <div v-bind:class="[componentId]">
-    <cly-header>
-        <template v-slot:header-left>
-            <h2> {{i18n('plugins.title')}} </h2>
-        </template>
+    <cly-header
+        :title="i18n('plugins.title')"
+    >
         <template v-slot:header-right>
             <component v-if="value.component" v-bind:is="value.component" :key="id" v-for="(value, id) in components" @update-row="updateRow($event)"></component>
         </template>
     </cly-header>
     <cly-main>
-		<cly-section>
-			<cly-datatable-n :rows="pluginsData" :tracked-fields="localTableTrackedFields" :default-sort="{prop: 'name', order: 'ascending'}" :row-class-name="tableRowClassName">
+		<cly-section data-test-id="table-plugins">
+			<cly-datatable-n :force-loading="isLoading" :rows="pluginsData" :tracked-fields="localTableTrackedFields" :default-sort="{prop: 'name', order: 'ascending'}" :row-class-name="tableRowClassName">
                 <template v-slot="scope">
                     <el-table-column type="switch" fixed="left" width="70" prop="enabled">
                         <template v-slot="rowScope">
@@ -34,9 +33,9 @@
                 </template>
                 <template v-slot:header-left>
                     <el-radio-group v-model="filterValue" @change="filter" plain size="small">
-                        <el-radio-button label="all">{{i18n('plugins.all')}}</el-radio-button>
-                        <el-radio-button label="enabled">{{i18n('plugins.enabled')}}</el-radio-button>
-                        <el-radio-button label="disabled">{{i18n('plugins.disabled')}}</el-radio-button>
+                        <el-radio-button test-id="all-features-radio-button" label="all">{{i18n('plugins.all')}}</el-radio-button>
+                        <el-radio-button test-id="enabled-features-radio-button" label="enabled">{{i18n('plugins.enabled')}}</el-radio-button>
+                        <el-radio-button test-id="disabled-features-radio-button" label="disabled">{{i18n('plugins.disabled')}}</el-radio-button>
                     </el-radio-group>
                 </template>
                 <template v-slot:bottomline="scope">

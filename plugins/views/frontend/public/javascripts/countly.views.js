@@ -202,6 +202,7 @@
                 showViewCountWarning: false,
                 tableDynamicCols: dynamicCols,
                 isGraphLoading: true,
+                isTableLoading: false,
                 showActionMapColumn: showActionMapColumn, //for action map
                 domains: [], //for action map
                 persistentSettings: [],
@@ -210,7 +211,8 @@
                 tableModes: [
                     {"key": "all", "label": CV.i18n('common.all')},
                     {"key": "selected", "label": CV.i18n('views.selected-views')}
-                ]
+                ],
+                isSpecialPeriod: countlyCommon.periodObj.isSpecialPeriod,
             };
         },
         mounted: function() {
@@ -238,6 +240,7 @@
                 var self = this;
                 if (force) {
                     self.isGraphLoading = true;
+                    self.isTableLoading = true;
                 }
                 this.$store.dispatch('countlyViews/fetchData').then(function() {
                     self.calculateGraphSeries();
@@ -252,11 +255,13 @@
                     self.validateTotalViewCount();
                 });
 
-                this.$store.dispatch("countlyViews/fetchViewsMainTable", {"segmentKey": this.$store.state.countlyViews.selectedSegment, "segmentValue": this.$store.state.countlyViews.selectedSegmentValue});
+                this.$store.dispatch("countlyViews/fetchViewsMainTable", {"segmentKey": this.$store.state.countlyViews.selectedSegment, "segmentValue": this.$store.state.countlyViews.selectedSegmentValue}).then(function() {
+                    self.isTableLoading = false;
+                });
             },
             validateTotalViewCount: function() {
                 this.totalViewCount = this.$store.state.countlyViews.totalViewsCount;
-                if (this.totalViewCount > countlyGlobal.views_limit) {
+                if (this.totalViewCount >= countlyGlobal.views_limit) {
                     this.showViewCountWarning = true;
                     this.totalViewCountWarning = CV.i18n('views.max-views-limit').replace("{0}", countlyGlobal.views_limit);
                 }
@@ -292,6 +297,43 @@
                     }
                 });
             },
+            deselectAll: function() {
+                var self = this;
+                var selected = countlyCommon.getPersistentSettings()["pageViewsItems_" + countlyCommon.ACTIVE_APP_ID] || [];
+
+                var highestTotalUserSelected = {total: 0, _id: null};
+                this.$refs.viewsTable.sourceRows.forEach(row => {
+                    if (row.selected && row.u > highestTotalUserSelected.total) {
+                        highestTotalUserSelected.total = row.u;
+                        highestTotalUserSelected._id = row._id;
+                    }
+                });
+                selected.splice(0, selected.length);
+                selected.push(highestTotalUserSelected._id);
+
+                var persistData = {};
+                persistData["pageViewsItems_" + countlyCommon.ACTIVE_APP_ID] = selected;
+                countlyCommon.setPersistentSettings(persistData);
+
+                if (this.$refs.viewsTable) {
+                    for (var k = 0; k < this.$refs.viewsTable.sourceRows.length; k++) {
+                        if (selected.indexOf(this.$refs.viewsTable.sourceRows[k]._id) === -1) {
+                            this.$refs.viewsTable.sourceRows[k].selected = false;
+                        }
+                    }
+                }
+
+                this.persistentSettings = selected;
+                this.$store.dispatch('countlyViews/onSetSelectedViews', selected).then(function() {
+                    self.isGraphLoading = true;
+                    self.$store.dispatch('countlyViews/fetchData').then(function() {
+                        self.calculateGraphSeries();
+                        self.isGraphLoading = false;
+                    });
+                });
+
+                this.refresh();
+            },
             handleSelectionChange: function(selectedRows) {
                 var self = this;
                 var selected = countlyCommon.getPersistentSettings()["pageViewsItems_" + countlyCommon.ACTIVE_APP_ID] || [];
@@ -321,6 +363,7 @@
                         }
                     }
                 }
+
                 this.persistentSettings = selected;
                 this.$store.dispatch('countlyViews/onSetSelectedViews', selected).then(function() {
                     self.isGraphLoading = true;
@@ -333,6 +376,8 @@
             },
             segmentChosen: function(val) {
                 var self = this;
+                this.isGraphLoading = true;
+                this.isTableLoading = true;
                 if (val.segment && val.segment !== "all" && val.segmentKey && val.segmentKey !== "all") {
                     this.$store.dispatch('countlyViews/onSetSelectedSegment', val.segment);
                     this.$store.dispatch('countlyViews/onSetSelectedSegmentValue', val.segmentKey);
@@ -343,6 +388,8 @@
                 }
                 this.$store.dispatch('countlyViews/fetchData').then(function() {
                     self.calculateGraphSeries();
+                    self.isGraphLoading = false;
+                    self.isTableLoading = false;
                 });
                 this.$store.dispatch("countlyViews/fetchViewsMainTable", {"segmentKey": this.$store.state.countlyViews.selectedSegment, "segmentValue": this.$store.state.countlyViews.selectedSegmentValue});
             },
@@ -414,6 +461,15 @@
                             },
                         }
                     };
+                    if (self.selectedProperty === "d") {
+                        self.lineOptions.yAxis = {
+                            axisLabel: {
+                                formatter: function(value) {
+                                    return countlyCommon.formatSecond(value);
+                                }
+                            }
+                        };
+                    }
                 });
             },
             getExportQuery: function() {
@@ -456,7 +512,13 @@
                 if (this.selectedProperty === "br") {
                     return countlyCommon.getShortNumber(value) + '%';
                 }
+                if (this.selectedProperty === "d") {
+                    return countlyCommon.formatSecond(value);
+                }
                 return countlyCommon.getShortNumber(value);
+            },
+            dateChanged: function() {
+                this.isSpecialPeriod = countlyCommon.periodObj.isSpecialPeriod;
             }
 
 
@@ -474,13 +536,16 @@
                         label: CV.i18n('views.segment-key'),
                         key: "segment",
                         items: this.chooseSegment,
-                        default: "all"
+                        default: "all",
+                        searchable: true,
+                        disabled: this.omittedSegments
                     },
                     {
                         label: CV.i18n('views.segment-value'),
                         key: "segmentKey",
                         items: this.chooseSegmentValue,
-                        default: "all"
+                        default: "all",
+                        searchable: true
                     }
                 ];
             },
@@ -489,7 +554,7 @@
                     {"value": "t", "name": CV.i18n('views.total-visits')},
                     {"value": "u", "name": CV.i18n('common.table.total-users')},
                     {"value": "n", "name": CV.i18n('common.table.new-users')},
-                    {"value": "d", "name": CV.i18n('views.duration')},
+                    {"value": "d", "name": CV.i18n('views.avg-duration')},
                     {"value": "s", "name": CV.i18n('views.starts')},
                     {"value": "e", "name": CV.i18n('views.exits')},
                     {"value": "b", "name": CV.i18n('views.bounces')},
@@ -510,9 +575,10 @@
             },
             chooseSegment: function() {
                 var segments = this.$store.state.countlyViews.segments || {};
+                var sortedKeys = Object.keys(segments).sort(Intl.Collator().compare);
                 var listed = [{"value": "all", "label": jQuery.i18n.map["views.all-segments"]}];
-                for (var key in segments) {
-                    listed.push({"value": key, "label": key});
+                for (var i = 0; i < sortedKeys.length; i++) {
+                    listed.push({"value": sortedKeys[i], "label": sortedKeys[i]});
                 }
                 return listed;
             },
@@ -549,7 +615,23 @@
             },
             isLoading: function() {
                 return this.$store.state.countlyViews.isLoading;
-            }
+            },
+            omittedSegments: function() {
+                var omittedSegmentsObj = {
+                    label: CV.i18n("events.all.omitted.segments"),
+                    options: []
+                };
+                var omittedSegments = this.$store.getters['countlyViews/getOmittedSegments'];
+                if (omittedSegments) {
+                    omittedSegmentsObj.options = omittedSegments.map(function(item) {
+                        return {
+                            "label": item,
+                            "value": item
+                        };
+                    });
+                }
+                return omittedSegmentsObj;
+            },
         },
         mixins: [
             countlyVue.container.dataMixin({
@@ -707,6 +789,7 @@
         permission: FEATURE_NAME,
         title: CV.i18n('views-per-session.title'),
         route: "#/analytics/sessions/views-per-session",
+        dataTestId: "session-views-per-session",
         component: ViewsPerSessionView,
         vuex: [{
             clyModel: countlyViewsPerSession
@@ -800,7 +883,7 @@
                 drillClone = $("#drill-filter-view").clone(true);
             }, 0);
         }
-    });
+    }, FEATURE_NAME);
 
     var GridComponent = countlyVue.views.create({
         template: CV.T('/dashboards/templates/widgets/analytics/widget.html'),
@@ -854,7 +937,7 @@
                     for (var k = 0; k < this.data.metrics.length; k++) {
                         if (this.data.metrics[k] === "d") {
                             if (this.data.dashData.data.chartData[z].t > 0) {
-                                ob[this.data.metrics[k]] = countlyCommon.timeString((this.data.dashData.data.chartData[z].d / this.data.dashData.data.chartData[z].t) / 60);
+                                ob[this.data.metrics[k]] = countlyCommon.formatSecond(this.data.dashData.data.chartData[z].d / this.data.dashData.data.chartData[z].t);
                             }
                             else {
                                 ob[this.data.metrics[k]] = 0;
@@ -952,6 +1035,7 @@
 
     countlyVue.container.registerData("/custom/dashboards/widget", {
         type: "analytics",
+        permission: FEATURE_NAME,
         label: CV.i18n("views.widget-type"),
         priority: 1,
         primary: false,
@@ -1009,7 +1093,7 @@
     };
 
     app.addAppSwitchCallback(function(appId) {
-        if (app._isFirstLoad !== true && countlyAuth.validateRead(FEATURE_NAME)) {
+        if (app._isFirstLoad !== true && countlyAuth.validateRead(FEATURE_NAME) && CountlyHelpers.isPluginEnabled(FEATURE_NAME)) {
             countlyViews.loadList(appId);
         }
     });

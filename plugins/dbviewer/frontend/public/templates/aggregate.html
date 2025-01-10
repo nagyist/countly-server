@@ -1,17 +1,17 @@
 <div class="dbviewer-aggregate">
-    <cly-header>
-        <template v-slot:header-left>
-            <div class="dbviewer-aggregate__title">
-                <div @click="backToDBViewer()" class="bu-is-size-7 dbviewer-aggregate__back-button">
-                    <i class="el-icon-back"></i> {{ i18n('dbviewer.back-to-dbviewer') }}
-                </div>
-                <h2 class="bu-mt-5"> {{ i18n('dbviewer.aggregation') }}</h2>
-            </div>
+    <cly-header
+        :title="i18n('dbviewer.aggregation')"
+    >
+        <template v-slot:header-top>
+            <cly-back-link
+                :link="'#/manage/db/' + db + '/' + collection" 
+                :title="i18n('dbviewer.back-to-dbviewer')">
+            </cly-back-link>
         </template>
     </cly-header>
     <cly-main>
         <div class="bu-is-size-5">
-            {{ i18n('dbviewer.execute-aggregation') }} <cly-tooltip-icon icon="ion-help-circled"></cly-tooltip-icon>
+            {{ i18n('dbviewer.execute-aggregation', collectionName) }} <cly-tooltip-icon icon="ion-help-circled"></cly-tooltip-icon>
         </div>
         <cly-section class="bg-white bu-p-5 bu-mt-4 dbviewer-aggregate__query-area">
             <el-input
@@ -26,7 +26,7 @@
             </div>
         </cly-section>
         <cly-section>
-            <cly-datatable-n :rows="aggregationResult" :preventDefaultSort="true">
+            <cly-datatable-n :force-loading="queryLoading" :rows="aggregationResult" :prevent-default-sort="true">
                 <template v-slot="scope">
                     <el-table-column prop="_id" label="_id" min-width="250" fixed>
                         <template v-slot="rowScope">
@@ -53,9 +53,9 @@
                             -
                         </template>
                     </el-table-column>
-                    <el-table-column v-if="field !== '_id'" min-width="150" v-for="field in fields" prop="field" :label="field">
+                    <el-table-column v-if="field !== '_id'" min-width="150" v-for="field in fields" :prop="field" :label="field">
                         <template v-slot="rowScope">
-                            <span>{{ rowScope.row[field] }}</span>
+                            <span>{{ decodeHtml(rowScope.row[field]) }}</span>
                         </template>
                     </el-table-column>
                 </template>

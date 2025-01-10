@@ -106,6 +106,81 @@
         }
     });
 
+    var DisplayTypeComponent = countlyVue.views.create({
+        template: CV.T('/dashboards/templates/helpers/drawer/display.html'),
+        props: {
+            values: {
+                type: Array,
+                default: function() {
+                    return [{label: "Percentage", value: "percentage"}, {label: "Value", value: "value"}];
+                }
+            },
+            placeholder: {
+                type: String
+            },
+            value: {
+                type: String,
+                required: true,
+                default: function() {
+                    return "";
+                }
+            }
+        },
+        data: function() {
+            return {
+                rerender: "_id_" + this.multiple
+            };
+        },
+        computed: {
+            placeholderText: function() {
+                return this.placeholder || "Select display type";
+            },
+            selectedValue: {
+                get: function() {
+                    return this.value;
+                },
+                set: function(item) {
+                    this.$emit("input", item);
+                }
+            },
+            allListeners: function() {
+                return Object.assign({},
+                    this.$listeners,
+                    {
+                        input: function() {
+                            /**
+                             * Overwrite the input listener passed from parent,
+                             * Since all parent listeners are passed to the children,
+                             * we want to overwrite this input listener so that the value
+                             * is not updated in the parent directly from the children.
+                             * We want to intercept the child value and return as array to parent
+                             * with the help of the selectedApps computed property
+                             */
+                        }
+                    }
+                );
+            }
+        },
+        watch: {
+            multiple: {
+                handler: function(newVal, oldVal) {
+                    /**
+                     * Everytime multiple changes we want to reset the selected value of
+                     * the component because the value depends on the multiple value.
+                     *
+                     * We also want to rerender the component to update the selected value.
+                     * We want to do this because el-select has a bug where even if the model
+                     * value changes, the input value is not updated.
+                     */
+                    if (newVal !== oldVal) {
+                        this.rerender = "_id_" + this.multiple;
+                        this.$emit("input", "");
+                    }
+                }
+            }
+        }
+    });
+
     var BreakdownComponent = countlyVue.views.create({
         template: CV.T('/dashboards/templates/helpers/drawer/breakdown.html'),
         mixins: [countlyVue.mixins.customDashboards.apps],
@@ -798,8 +873,28 @@
         template: CV.T('/dashboards/templates/helpers/drawer/period.html'),
         props: {
             value: {
-                type: [Array, String],
+                type: [Array, String, Object, Boolean],
                 default: ""
+            },
+            disabledShortcuts: {
+                type: [Array, Boolean],
+                default: false,
+                required: false,
+            },
+            allowCustomRange: {
+                type: Boolean,
+                default: true,
+                required: false
+            },
+            showRelativeModes: {
+                type: Boolean,
+                default: true,
+                required: false
+            },
+            showCheckbox: {
+                type: Boolean,
+                default: true,
+                required: false
             }
         },
         data: function() {
@@ -823,7 +918,7 @@
                         return this.titleCheckbox;
                     }
 
-                    if (this.value) {
+                    if (this.value || !this.showCheckbox) {
                         return true;
                     }
 
@@ -839,6 +934,13 @@
                     }
 
                     this.titleCheckbox = v;
+                }
+            }
+        },
+        methods: {
+            onCustomPeriodChange: function(periodObj) {
+                if (periodObj.excludeCurrentDay && periodObj.value) {
+                    this.customPeriod = {period: periodObj.value, exclude_current_day: true};
                 }
             }
         }
@@ -912,7 +1014,7 @@
         template: CV.T('/dashboards/templates/helpers/widget/period.html'),
         props: {
             customPeriod: {
-                type: [Array, String],
+                type: [Array, String, Object, Boolean],
             }
         },
         computed: {
@@ -929,6 +1031,9 @@
         },
         methods: {
             formatPeriodString: function(period) {
+                if (Object.prototype.hasOwnProperty.call(period, "period")) {
+                    period = countlyCommon.getPeriodRange(period, Date.now());
+                }
                 if (Array.isArray(period)) {
                     if ((period[0] + '').length === 10) {
                         period[0] = period[0] * 1000;
@@ -948,6 +1053,9 @@
                     }
                 }
                 else {
+                    if (period === "0days") {
+                        return CV.i18n("common.all-time");
+                    }
                     var periodNames = countlyCommon.convertToTimePeriodObj(period);
                     return periodNames.longName;
                 }
@@ -963,14 +1071,11 @@
         template: CV.T('/dashboards/templates/helpers/widget/primary-legend.html'),
         mixins: [countlyVue.mixins.customDashboards.apps],
         props: {
-            apps: {
-                type: Array,
-                default: function() {
-                    return [];
-                }
-            },
             customPeriod: {
-                type: [Array, String],
+                type: [Array, String, Object, Boolean],
+            },
+            customText: {
+                type: String,
             },
             reportInfo: {
                 type: Object
@@ -978,25 +1083,6 @@
             showPeriod: {
                 type: Boolean,
                 default: true
-            },
-            showApps: {
-                type: Boolean,
-                default: true
-            }
-        },
-        computed: {
-            app: function() {
-                var appId = this.apps[0];
-
-                if (!appId) {
-                    return null;
-                }
-
-                return {
-                    id: appId,
-                    name: this.__getAppName(appId),
-                    image: 'background-image: url("' + this.__getAppLogo(appId) + '")'
-                };
             }
         }
     });
@@ -1032,8 +1118,6 @@
                     var appId = this.apps[i];
                     appData.push({
                         id: appId,
-                        name: this.__getAppName(appId),
-                        image: 'background-image: url("' + this.__getAppLogo(appId) + '")',
                         labels: labels[appId] || []
                     });
                 }
@@ -1047,10 +1131,6 @@
                 var paddingRight = '0';
 
                 var rem = allApps.length % 2;
-
-                if (((index + 1) % 2) !== 0) {
-                    paddingRight = '8px';
-                }
 
                 if (rem !== 0) {
                     //There are odd numbers of apps.
@@ -1101,10 +1181,86 @@
         }
     });
 
+    var WidgetAppsComponent = countlyVue.views.create({
+        template: CV.T('/dashboards/templates/helpers/widget/apps.html'),
+        mixins: [countlyVue.mixins.customDashboards.apps],
+        props: {
+            apps: {
+                type: Array,
+                default: function() {
+                    return [];
+                }
+            }
+        },
+        computed: {
+            isMultiple: function() {
+                return this.apps.length > 1;
+            },
+            app: function() {
+                var appId = this.apps[0];
+                if (!appId) {
+                    return null;
+                }
+                let image = this.getAppImage(appId);
+                return {
+                    id: appId,
+                    name: countlyCommon.unescapeHtml(this.__getAppName(appId)),
+                    image: image,
+                    avatar: this.getAppAvatar(appId, image)
+                };
+            },
+            tooltip: function() {
+                let self = this;
+                let content = this.apps.map(function(appId) {
+                    return self.__getAppName(appId);
+                });
+                return {
+                    content: content.join(", "),
+                    placement: "auto"
+                };
+            }
+        },
+        methods: {
+            getAppInitials: function(name) {
+                name = (name || "").trim().split(" ");
+                if (name.length === 1) {
+                    return name[0][0] || "";
+                }
+                return (name[0][0] || "") + (name[name.length - 1][0] || "");
+            },
+            getAppImage: function(appId) {
+                if (this.__allApps[appId] && this.__allApps[appId].has_image) {
+                    return this.__allApps[appId].image;
+                }
+                return null;
+            },
+            getAppAvatar: function(appId, image) {
+                if (image) {
+                    return {'background-image': 'url("' + image + '")'};
+                }
+                else if (this.__allApps[appId]) {
+                    var position = (this.__allApps[appId].created_at % 12) * -100;
+                    return {
+                        'background-image': 'url("images/avatar-sprite.png?v2")',
+                        'background-position': position + 'px center',
+                        'background-size': 'auto',
+                        'display': 'flex',
+                        'align-items': 'center',
+                        'justify-content': 'center',
+                    };
+                }
+                else {
+                    return null;
+                }
+            },
+        }
+    });
+
     /**
      * DRAWER HELPERS REGISTRATION
      */
     Vue.component("clyd-metric", MetricComponent);
+    Vue.component("clyd-displaytype", DisplayTypeComponent);
     Vue.component("clyd-breakdown", BreakdownComponent);
     Vue.component("clyd-event", EventComponent);
     Vue.component("clyd-datatype", DataTypeComponent);
@@ -1124,5 +1280,6 @@
     Vue.component("clyd-secondary-legend", SecondaryWidgetLegend);
     Vue.component("clyd-title-labels", TitleLabelsComponent);
     Vue.component("clyd-widget-title", WidgetTitleComponent);
+    Vue.component("clyd-widget-apps", WidgetAppsComponent);
 
 })();

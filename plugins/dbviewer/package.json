@@ -19,6 +19,7 @@
     "mongo",
     "database"
   ],
-  "dependencies": {},
+  "dependencies": {
+  },
   "private": true
 }

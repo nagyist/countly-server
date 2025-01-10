@@ -54,6 +54,16 @@ countlyEvents.processEvents = function(params) {
             }
 
             for (let i = 0; i < params.qstring.events.length; i++) {
+
+                if (typeof params.qstring.events[i].key !== 'string') {
+                    try {
+                        params.qstring.events[i].key = JSON.stringify(params.qstring.events[i].key);
+                    }
+                    catch (error) {
+                        params.qstring.events[i].key += "";
+                    }
+                }
+
                 var currEvent = params.qstring.events[i],
                     shortEventName = "",
                     eventCollectionName = "";
@@ -66,7 +76,6 @@ countlyEvents.processEvents = function(params) {
                 if (!currEvent.key || (currEvent.key.indexOf('[CLY]_') === 0 && plugins.internalEvents.indexOf(currEvent.key) === -1)) {
                     continue;
                 }
-
                 if (currEvent.count && common.isNumber(currEvent.count)) {
                     currEvent.count = parseInt(currEvent.count, 10);
                 }
@@ -79,15 +88,12 @@ countlyEvents.processEvents = function(params) {
                         appEvents.indexOf(currEvent.key) === -1) {
                     continue;
                 }
-
                 shortEventName = common.fixEventKey(currEvent.key);
 
                 if (!shortEventName) {
                     continue;
                 }
-
                 eventCollectionName = "events" + crypto.createHash('sha1').update(shortEventName + params.app_id).digest('hex');
-
                 if (currEvent.segmentation) {
 
                     for (var segKey in currEvent.segmentation) {
@@ -113,35 +119,41 @@ countlyEvents.processEvents = function(params) {
                         }
 
                         var tmpSegVal;
-                        try {
-                            tmpSegVal = currEvent.segmentation[segKey] + "";
+                        var myValues = [];
+                        if (Array.isArray(currEvent.segmentation[segKey])) {
+                            currEvent.segmentation[segKey] = currEvent.segmentation[segKey].splice(0, (pluginsGetConfig.array_list_limit || 10));
+                            //myValues = currEvent.segmentation[segKey];
+                            myValues = []; //ignore array values.
                         }
-                        catch (ex) {
-                            console.log("Incorrect segment value", params.app_id, currEvent.key, "segment", segKey, ex);
-                            delete currEvent.segmentation[segKey];
-                            tmpSegVal = "";
+                        else {
+                            myValues = [currEvent.segmentation[segKey]];
                         }
+                        for (var z = 0; z < myValues.length; z++) {
+                            try {
+                                tmpSegVal = myValues[z] + "";
+                                tmpSegVal = tmpSegVal.replace(/^\$+/, "").replace(/\./g, ":");
+                                tmpSegVal = common.encodeCharacters(tmpSegVal);
 
-                        if (tmpSegVal === "") {
-                            continue;
-                        }
+                                if (forbiddenSegValues.indexOf(tmpSegVal) !== -1) {
+                                    tmpSegVal = "[CLY]" + tmpSegVal;
+                                }
 
-                        // Mongodb field names can't start with $ or contain .
-                        tmpSegVal = tmpSegVal.replace(/^\$+/, "").replace(/\./g, ":");
-
-                        if (forbiddenSegValues.indexOf(tmpSegVal) !== -1) {
-                            tmpSegVal = "[CLY]" + tmpSegVal;
+                                var postfix = common.crypto.createHash("md5").update(tmpSegVal).digest('base64')[0];
+                                metaToFetch[eventCollectionName + "no-segment_" + common.getDateIds(params).zero + "_" + postfix] = {
+                                    coll: eventCollectionName,
+                                    id: "no-segment_" + common.getDateIds(params).zero + "_" + postfix
+                                };
+                            }
+                            catch (ex) {
+                                console.log("Incorrect segment value", params.app_id, currEvent.key, "segment", segKey, ex);
+                                delete currEvent.segmentation[segKey];
+                                tmpSegVal = "";
+                            }
                         }
-                        var postfix = common.crypto.createHash("md5").update(tmpSegVal).digest('base64')[0];
-                        metaToFetch[eventCollectionName + "no-segment_" + common.getDateIds(params).zero + "_" + postfix] = {
-                            coll: eventCollectionName,
-                            id: "no-segment_" + common.getDateIds(params).zero + "_" + postfix
-                        };
 
                     }
                 }
             }
-
             async.map(Object.keys(metaToFetch), fetchEventMeta, function(err2, eventMetaDocs) {
                 var appSgValues = {};
 
@@ -208,7 +220,7 @@ function processEvents(appEvents, appSegments, appSgValues, params, omitted_segm
         forbiddenSegValues.push(i + "");
     }
 
-    for (let i = 0; i < params.qstring.events.length; i++) {
+    for (let i = 0; i < params.qstring?.events.length; i++) {
 
         var currEvent = params.qstring.events[i];
         tmpEventObj = {};
@@ -311,68 +323,80 @@ function processEvents(appEvents, appSegments, appSgValues, params, omitted_segm
                     continue;
                 }
 
-                tmpEventObj = {};
 
+
+                var myValues = [];
                 var tmpSegVal;
-                try {
-                    tmpSegVal = currEvent.segmentation[segKey] + "";
-                }
-                catch (ex) {
-                    tmpSegVal = "";
-                }
-
-                if (tmpSegVal === "") {
-                    continue;
-                }
-
-                // Mongodb field names can't start with $ or contain .
-                tmpSegVal = tmpSegVal.replace(/^\$+/, "").replace(/\./g, ":");
-
-                if (forbiddenSegValues.indexOf(tmpSegVal) !== -1) {
-                    tmpSegVal = "[CLY]" + tmpSegVal;
-                }
-
-                var postfix = common.crypto.createHash("md5").update(tmpSegVal).digest('base64')[0];
-
-                if (pluginsGetConfig.event_segmentation_value_limit &&
-                        appSgValues[eventCollectionName] &&
-                        appSgValues[eventCollectionName]["no-segment" + "_" + dateIds.zero + "_" + postfix] &&
-                        appSgValues[eventCollectionName]["no-segment" + "_" + dateIds.zero + "_" + postfix][segKey] &&
-                        appSgValues[eventCollectionName]["no-segment" + "_" + dateIds.zero + "_" + postfix][segKey].indexOf(tmpSegVal) === -1 &&
-                        appSgValues[eventCollectionName]["no-segment" + "_" + dateIds.zero + "_" + postfix][segKey].length >= pluginsGetConfig.event_segmentation_value_limit) {
-                    continue;
-                }
-
-                if (currEvent.sum && common.isNumber(currEvent.sum)) {
-                    common.fillTimeObjectMonth(params, tmpEventObj, tmpSegVal + '.' + common.dbMap.sum, currEvent.sum);
-                }
-
-                if (currEvent.dur && common.isNumber(currEvent.dur)) {
-                    common.fillTimeObjectMonth(params, tmpEventObj, tmpSegVal + '.' + common.dbMap.dur, currEvent.dur);
-                }
-
-                common.fillTimeObjectMonth(params, tmpEventObj, tmpSegVal + '.' + common.dbMap.count, currEvent.count);
-
-                if (!eventSegmentsZeroes[eventCollectionName]) {
-                    eventSegmentsZeroes[eventCollectionName] = [];
-                    common.arrayAddUniq(eventSegmentsZeroes[eventCollectionName], dateIds.zero + "." + postfix);
+                if (Array.isArray(currEvent.segmentation[segKey])) {
+                    //myValues = currEvent.segmentation[segKey];
+                    myValues = [];//ignore array values
                 }
                 else {
-                    common.arrayAddUniq(eventSegmentsZeroes[eventCollectionName], dateIds.zero + "." + postfix);
+                    myValues = [currEvent.segmentation[segKey]];
                 }
+                for (var z = 0; z < myValues.length; z++) {
+                    tmpEventObj = {};
+                    tmpSegVal = myValues[z];
+                    try {
+                        tmpSegVal = tmpSegVal + "";
+                    }
+                    catch (ex) {
+                        tmpSegVal = "";
+                    }
 
-                if (!eventSegments[eventCollectionName + "." + dateIds.zero + "." + postfix]) {
-                    eventSegments[eventCollectionName + "." + dateIds.zero + "." + postfix] = {};
+                    if (tmpSegVal === "") {
+                        continue;
+                    }
+
+                    // Mongodb field names can't start with $ or contain .
+                    tmpSegVal = tmpSegVal.replace(/^\$+/, "").replace(/\./g, ":");
+
+                    if (forbiddenSegValues.indexOf(tmpSegVal) !== -1) {
+                        tmpSegVal = "[CLY]" + tmpSegVal;
+                    }
+
+                    tmpSegVal = common.encodeCharacters(tmpSegVal);
+
+                    var postfix = common.crypto.createHash("md5").update(tmpSegVal).digest('base64')[0];
+
+                    if (pluginsGetConfig.event_segmentation_value_limit &&
+							appSgValues[eventCollectionName] &&
+							appSgValues[eventCollectionName]["no-segment" + "_" + dateIds.zero + "_" + postfix] &&
+							appSgValues[eventCollectionName]["no-segment" + "_" + dateIds.zero + "_" + postfix][segKey] &&
+							appSgValues[eventCollectionName]["no-segment" + "_" + dateIds.zero + "_" + postfix][segKey].indexOf(tmpSegVal) === -1 &&
+							appSgValues[eventCollectionName]["no-segment" + "_" + dateIds.zero + "_" + postfix][segKey].length >= pluginsGetConfig.event_segmentation_value_limit) {
+                        continue;
+                    }
+
+                    if (currEvent.sum && common.isNumber(currEvent.sum)) {
+                        common.fillTimeObjectMonth(params, tmpEventObj, tmpSegVal + '.' + common.dbMap.sum, currEvent.sum);
+                    }
+
+                    if (currEvent.dur && common.isNumber(currEvent.dur)) {
+                        common.fillTimeObjectMonth(params, tmpEventObj, tmpSegVal + '.' + common.dbMap.dur, currEvent.dur);
+                    }
+
+                    common.fillTimeObjectMonth(params, tmpEventObj, tmpSegVal + '.' + common.dbMap.count, currEvent.count);
+
+                    if (!eventSegmentsZeroes[eventCollectionName]) {
+                        eventSegmentsZeroes[eventCollectionName] = [];
+                        common.arrayAddUniq(eventSegmentsZeroes[eventCollectionName], dateIds.zero + "." + postfix);
+                    }
+                    else {
+                        common.arrayAddUniq(eventSegmentsZeroes[eventCollectionName], dateIds.zero + "." + postfix);
+                    }
+
+                    if (!eventSegments[eventCollectionName + "." + dateIds.zero + "." + postfix]) {
+                        eventSegments[eventCollectionName + "." + dateIds.zero + "." + postfix] = {};
+                    }
+
+                    eventSegments[eventCollectionName + "." + dateIds.zero + "." + postfix]['meta_v2.' + segKey + '.' + tmpSegVal] = true;
+                    eventSegments[eventCollectionName + "." + dateIds.zero + "." + postfix]["meta_v2.segments." + segKey] = true;
+
+                    tmpEventColl[segKey + "." + dateIds.month + "." + postfix] = tmpEventObj;
                 }
-
-                eventSegments[eventCollectionName + "." + dateIds.zero + "." + postfix]['meta_v2.' + segKey + '.' + tmpSegVal] = true;
-                eventSegments[eventCollectionName + "." + dateIds.zero + "." + postfix]["meta_v2.segments." + segKey] = true;
-
-                tmpEventColl[segKey + "." + dateIds.month + "." + postfix] = tmpEventObj;
             }
-
         }
-
         if (!eventCollections[eventCollectionName]) {
             eventCollections[eventCollectionName] = {};
         }
@@ -383,7 +407,7 @@ function processEvents(appEvents, appSegments, appSgValues, params, omitted_segm
         params.time = time;
     }
 
-    if (!pluginsGetConfig.safe) {
+    if (!pluginsGetConfig.safe && !(params.qstring?.safe_api_response)) {
         for (let collection in eventCollections) {
             if (eventSegmentsZeroes[collection] && eventSegmentsZeroes[collection].length) {
                 for (let i = 0; i < eventSegmentsZeroes[collection].length; i++) {

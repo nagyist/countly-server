@@ -8,6 +8,7 @@ var pluginDependencies = require('./pluginDependencies.js'),
     mongodb = require('mongodb'),
     cluster = require('cluster'),
     countlyConfig = require('../frontend/express/config', 'dont-enclose'),
+    apiCountlyConfig = require('../api/config', 'dont-enclose'),
     utils = require('../api/utils/utils.js'),
     fs = require('fs'),
     url = require('url'),
@@ -20,9 +21,11 @@ var pluginDependencies = require('./pluginDependencies.js'),
     log = require('../api/utils/log.js'),
     logDbRead = log('db:read'),
     logDbWrite = log('db:write'),
+    logDriverDb = log('driver:db'),
     exec = cp.exec,
     spawn = cp.spawn,
     configextender = require('../api/configextender');
+var pluginConfig = {};
 
 /**
 * This module handles communicaton with plugins
@@ -34,6 +37,7 @@ var pluginManager = function pluginManager() {
     var events = {};
     var plugs = [];
     var methodCache = {};
+    var methodPromiseCache = {};
     var configs = {};
     var defaultConfigs = {};
     var configsOnchanges = {};
@@ -41,6 +45,10 @@ var pluginManager = function pluginManager() {
     var finishedSyncing = true;
     var expireList = [];
     var masking = {};
+    var fullPluginsMap = {};
+    var coreList = ["api", "core"];
+    var dependencyMap = {};
+
 
     /**
      *  Registered app types
@@ -76,38 +84,199 @@ var pluginManager = function pluginManager() {
         countly_fs: "PLUGINFS"
     };
 
+    this.loadDependencyMap = function() {
+        var pluginNames = [];
+        var pluginsList = fs.readdirSync(path.resolve(__dirname, './')); //all plugins in folder
+        //filter out just folders
+        for (var z = 0; z < pluginsList.length; z++) {
+            var p = fs.lstatSync(path.resolve(__dirname, './' + pluginsList[z]));
+            if (p.isDirectory() || p.isSymbolicLink()) {
+                pluginNames.push(pluginsList[z]);
+            }
+        }
+        dependencyMap = pluginDependencies.getDependencies(pluginNames, {});
+    };
+
     /**
     * Initialize api side plugins
     **/
     this.init = function() {
-        for (let i = 0, l = plugins.length; i < l; i++) {
+        var pluginNames = [];
+        var pluginsList = fs.readdirSync(path.resolve(__dirname, './')); //all plugins in folder
+        //filter out just folders
+        for (var z = 0; z < pluginsList.length; z++) {
+            var p = fs.lstatSync(path.resolve(__dirname, './' + pluginsList[z]));
+            if (p.isDirectory() || p.isSymbolicLink()) {
+                pluginNames.push(pluginsList[z]);
+            }
+        }
+        dependencyMap = pluginDependencies.getDependencies(pluginNames, {});
+
+
+        for (let i = 0, l = pluginNames.length; i < l; i++) {
+            fullPluginsMap[pluginNames[i]] = true;
             try {
-                pluginsApis[plugins[i]] = require("./" + plugins[i] + "/api/api");
+                pluginsApis[pluginNames[i]] = require("./" + pluginNames[i] + "/api/api");
+
             }
             catch (ex) {
+                console.log('Skipping plugin ' + pluginNames[i] + ' as we could not load it because of errors.');
                 console.error(ex.stack);
+                console.log("Saving this plugin as disabled in db");
             }
         }
     };
 
+    this.updatePluginsInDb = function(db, params, callback) {
+        try {
+            params.qstring.plugin = JSON.parse(params.qstring.plugin);
+        }
+        catch (err) {
+            console.log('Error parsing plugins');
+        }
+
+        if (params.qstring.plugin && typeof params.qstring.plugin === 'object') {
+            var self = this;
+            var before = {};
+            var fordb = {};
+            var arr = self.getPlugins();
+            for (var i in params.qstring.plugin) {
+                fordb['plugins.' + i] = params.qstring.plugin[i];
+                if (arr.indexOf(i) === -1) {
+                    before[i] = false;
+                }
+                else {
+                    before[i] = true;
+                }
+            }
+            db.collection('plugins').updateOne({'_id': 'plugins'}, {'$set': fordb}, function(err1) {
+                if (err1) {
+                    log.e(err1);
+                }
+                else {
+                    self.dispatch("/systemlogs", {params: params, action: "change_plugins", data: {before: before, update: params.qstring.plugin}});
+                    // process.send({ cmd: "startPlugins" });
+                    self.loadConfigs(db, function() {
+                        callback();
+                    });
+                }
+            });
+        }
+
+    };
+
+
     this.initPlugin = function(pluginName) {
         try {
             pluginsApis[pluginName] = require("./" + pluginName + "/api/api");
+            fullPluginsMap[pluginName] = true;
         }
         catch (ex) {
             console.error(ex.stack);
         }
     };
 
+    this.installMissingPlugins = function(db, callback) {
+        console.log("Checking if any plugins are missing");
+        var self = this;
+        var installPlugins = [];
+        db.collection("plugins").findOne({_id: "plugins"}, function(err, res) {
+            res = res || {};
+            pluginConfig = res.plugins || {}; //currently enabled plugins
+            //list of plugin folders
+            var pluginNames = [];
+            var pluginsList = fs.readdirSync(path.resolve(__dirname, './'));
+            //filter out just folders
+            for (var z = 0; z < pluginsList.length; z++) {
+                var p = fs.lstatSync(path.resolve(__dirname, './' + pluginsList[z]));
+                if (p.isDirectory() || p.isSymbolicLink()) {
+                    pluginNames.push(pluginsList[z]);
+                }
+            }
+            for (var zz = 0; zz < pluginNames.length; zz++) {
+                if (typeof pluginConfig[pluginNames[zz]] === 'undefined') {
+                    installPlugins.push(pluginNames[zz]);
+                }
+            }
+            if (installPlugins.length > 0) {
+                console.log("Plugins to install: " + JSON.stringify(installPlugins));
+            }
+            Promise.each(installPlugins, function(name) {
+                return new Promise(function(resolve) {
+                    var obb = {'name': name};
+                    if (plugins.indexOf(name) === -1) {
+                        obb.enable = false;
+                    }
+                    else {
+                        obb.enable = true;
+                    }
+                    self.processPluginInstall(db, obb, function() {
+                        resolve();
+                    });
+                });
+            }).then(function() {
+                if (callback) {
+                    callback();
+                }
+            }).catch(function(rejection) {
+                console.log(rejection);
+                if (callback) {
+                    callback();
+                }
+            });
+
+
+        });
+    };
+
+    this.reloadEnabledPluginList = function(db, callback) {
+        this.loadDependencyMap();
+        db.collection("plugins").findOne({_id: "plugins"}, function(err, res) {
+            if (err) {
+                console.log(err);
+            }
+            res = res || {};
+            if (Object.keys(fullPluginsMap).length > 0) {
+                for (var pp in res.plugins) {
+                    if (!fullPluginsMap[pp]) {
+                        delete res.plugins[pp];
+                    }
+                }
+            }
+            pluginConfig = res.plugins || {}; //currently enabled plugins
+            if (callback) {
+                callback();
+            }
+        });
+    };
     /**
     * Load configurations from database
     * @param {object} db - database connection for countly db
     * @param {function} callback - function to call when configs loaded
     * @param {boolean} api - was the call made from api process
     **/
-    this.loadConfigs = function(db, callback, api) {
+    this.loadConfigs = function(db, callback/*, api*/) {
         var self = this;
         db.collection("plugins").findOne({_id: "plugins"}, function(err, res) {
+            if (err) {
+                console.log(err);
+            }
+            var pluginNames = [];
+            var pluginsList = fs.readdirSync(path.resolve(__dirname, './'));
+            for (var z = 0; z < pluginsList.length; z++) {
+                var p = fs.lstatSync(path.resolve(__dirname, './' + pluginsList[z]));
+                if (p.isDirectory() || p.isSymbolicLink()) {
+                    pluginNames.push(pluginsList[z]);
+                }
+            }
+
+            for (let i = 0, l = pluginNames.length; i < l; i++) {
+                fullPluginsMap[pluginNames[i]] = true;
+            }
+
+            if (err) {
+                console.log(err);
+            }
             if (!err) {
                 res = res || {};
                 for (let ns in configsOnchanges) {
@@ -118,13 +287,41 @@ var pluginManager = function pluginManager() {
                 }
                 configs = res;
                 delete configs._id;
-                self.checkConfigs(db, configs, defaultConfigs, callback);
-                if (api && self.getConfig("api").sync_plugins) {
-                    self.checkPlugins(db);
-                }
-                if (self.getConfig("data-manager").enableDataMasking) {
-                    self.fetchMaskingConf({"db": db});
-                }
+                pluginConfig = res.plugins || {}; //currently enabled plugins
+                self.checkConfigs(db, configs, defaultConfigs, function() {
+
+                    var installPlugins = [];
+                    for (var z1 = 0; z1 < plugins.length; z1++) {
+                        if (typeof pluginConfig[plugins[z1]] === 'undefined') {
+                            pluginConfig[plugins[z1]] = true;
+                            //installPlugins.push(plugins[z]);
+                        }
+                    }
+                    Promise.each(installPlugins, function(name) {
+                        return new Promise(function(resolve) {
+                            self.processPluginInstall(db, name, function() {
+                                resolve();
+                            });
+                        });
+                    }).then(function() {
+                        if (callback) {
+                            callback();
+                        }
+                    }).catch(function(rejection) {
+                        console.log(rejection);
+                        if (callback) {
+                            callback();
+                        }
+                    });
+                    /*if (api && self.getConfig("api").sync_plugins) {
+						self.checkPlugins(db);
+					}*/
+
+                    if (self.getConfig("data-manager").enableDataMasking) {
+                        self.fetchMaskingConf({"db": db});
+                    }
+                });
+
             }
             else if (callback) {
                 callback();
@@ -263,7 +460,7 @@ var pluginManager = function pluginManager() {
         }));
         var ret = {};
         for (let i = 0; i < c.length; i++) {
-            if (!excludeFromUI[c[i]]) {
+            if (!excludeFromUI[c[i]] && (plugins.indexOf(c[i]) === -1 || pluginConfig[c[i]])) {
                 ret[c[i]] = this.getConfig(c[i]);
             }
         }
@@ -337,14 +534,17 @@ var pluginManager = function pluginManager() {
     **/
     this.updateConfigs = function(db, namespace, conf, callback) {
         var update = {};
-        if (namespace === "_id" || namespace === "plugins" && !this.getConfig("api").sync_plugins) {
+        if (namespace === "_id") {
             if (callback) {
                 callback();
             }
         }
         else {
             update[namespace] = conf;
-            db.collection("plugins").update({_id: "plugins"}, {$set: flattenObject(update)}, {upsert: true}, function() {
+            db.collection("plugins").update({_id: "plugins"}, {$set: flattenObject(update)}, {upsert: true}, function(err) {
+                if (err) {
+                    console.log(err);
+                }
                 if (callback) {
                     callback();
                 }
@@ -498,18 +698,54 @@ var pluginManager = function pluginManager() {
             }
         }
     };
+    this.isPluginOn = function(name) {
+        if (coreList.indexOf(name) === -1) { //is one of plugins
+            if (pluginConfig[name]) {
+                return true;
+            }
+            else {
+                return false;
+            }
+        }
+        else {
+            return true;
+        }
+    };
 
+    this.getFeatureName = function() {
+        var stack = new Error('test').stack;
+        stack = stack.split('\n');
+        //0 - error, 1 - this function, 2 - pluginmanager, 3 - right path)
+
+        if (stack && stack[3]) {
+            stack = stack[3];
+
+            stack = stack.split('/');
+            for (var z = 0; z < stack.length - 3; z++) {
+                if (stack[z] === 'plugins') {
+                    return stack[z + 1];
+                }
+            }
+        }
+
+    };
     /**
     * Register listening to new event on api side
     * @param {string} event - event to listen to
     * @param {function} callback - function to call, when event happens
     * @param {boolean} unshift - whether to register a high-priority callback (unshift it to the listeners array)
+	* @param {string} featureName -  name of plugin
     **/
-    this.register = function(event, callback, unshift = false) {
+    this.register = function(event, callback, unshift = false, featureName) {
         if (!events[event]) {
             events[event] = [];
         }
-        events[event][unshift ? 'unshift' : 'push'](callback);
+        //{"cb":callback, "plugin":
+        if (!featureName) {
+            featureName = this.getFeatureName();
+            featureName = featureName || 'core';
+        }
+        events[event][unshift ? 'unshift' : 'push']({"cb": callback, "name": featureName});
     };
 
     // TODO: Remove this function and all it calls when moving to Node 12.
@@ -539,17 +775,24 @@ var pluginManager = function pluginManager() {
         if (events[event]) {
             try {
                 for (let i = 0, l = events[event].length; i < l; i++) {
-                    try {
-                        promise = events[event][i].call(null, params);
+                    var isEnabled = true;
+                    if (fullPluginsMap[events[event][i].name] && pluginConfig[events[event][i].name] === false) {
+                        isEnabled = false;
                     }
-                    catch (error) {
-                        promise = Promise.reject(error);
-                        console.error(error.stack);
+
+                    if (events[event][i] && events[event][i].cb && isEnabled) {
+                        try {
+                            promise = events[event][i].cb.call(null, params);
+                        }
+                        catch (error) {
+                            promise = Promise.reject(error);
+                            console.error(error.stack);
+                        }
+                        if (promise) {
+                            used = true;
+                        }
+                        promises.push(promise);
                     }
-                    if (promise) {
-                        used = true;
-                    }
-                    promises.push(promise);
                 }
             }
             catch (ex) {
@@ -617,16 +860,27 @@ var pluginManager = function pluginManager() {
     * @param {object} express - reference to express js
     **/
     this.loadAppStatic = function(app, countlyDb, express) {
-        for (let i = 0, l = plugins.length; i < l; i++) {
+        var pluginNames = [];
+        var pluginsList = fs.readdirSync(path.resolve(__dirname, './')); //all plugins in folder
+        //filter out just folders
+        for (var z = 0; z < pluginsList.length; z++) {
+            var p = fs.lstatSync(path.resolve(__dirname, './' + pluginsList[z]));
+            if (p.isDirectory() || p.isSymbolicLink()) {
+                pluginNames.push(pluginsList[z]);
+            }
+        }
+
+        for (let i = 0, l = pluginNames.length; i < l; i++) {
             try {
-                var plugin = require("./" + plugins[i] + "/frontend/app");
-                plugs.push(plugin);
-                app.use(countlyConfig.path + '/' + plugins[i], express.static(__dirname + '/' + plugins[i] + "/frontend/public", { maxAge: 31557600000 }));
+                var plugin = require("./" + pluginNames[i] + "/frontend/app");
+                plugs.push({'name': pluginNames[i], "plugin": plugin});
+                app.use(countlyConfig.path + '/' + pluginNames[i], express.static(__dirname + '/' + pluginNames[i] + "/frontend/public", { maxAge: 31557600000 }));
                 if (plugin.staticPaths) {
                     plugin.staticPaths(app, countlyDb, express);
                 }
             }
             catch (ex) {
+                console.log("skipping plugin because of errors:" + pluginNames[i]);
                 console.error(ex.stack);
             }
         }
@@ -641,7 +895,71 @@ var pluginManager = function pluginManager() {
     this.loadAppPlugins = function(app, countlyDb, express) {
         for (let i = 0; i < plugs.length; i++) {
             try {
-                plugs[i].init(app, countlyDb, express);
+                //plugs[i].init(app, countlyDb, express);
+                if (plugs[i] && plugs[i].plugin && plugs[i].plugin.init && typeof plugs[i].plugin.init === 'function') {
+                    plugs[i].plugin.init({
+                        name: plugs[i].name,
+                        get: function(pathTo, callback) {
+                            var pluginName = this.name;
+                            if (!callback) {
+                                app.get(pathTo);
+                            }
+                            else {
+                                app.get(pathTo, function(req, res, next) {
+                                    if (pluginConfig[pluginName]) {
+                                        callback(req, res, next);
+                                    }
+                                    else {
+                                        next();
+                                    }
+                                });
+                            }
+                        },
+                        post: function(pathTo, callback) {
+                            var pluginName = this.name;
+                            app.post(pathTo, function(req, res, next) {
+                                if (pluginConfig[pluginName] && callback && typeof callback === 'function') {
+                                    callback(req, res, next);
+                                }
+                                else {
+                                    next();
+                                }
+                            });
+                        },
+                        use: function(pathTo, callback) {
+                            if (!callback) {
+                                callback = pathTo;
+                                pathTo = '/';//fallback to default
+                            }
+
+                            var pluginName = this.name;
+                            app.use(pathTo, function(req, res, next) {
+                                if (pluginConfig[pluginName] && callback && typeof callback === 'function') {
+                                    callback(req, res, next);
+                                }
+                                else {
+                                    next();
+                                }
+                            });
+                        },
+                        all: function(pathTo, callback) {
+                            if (!callback) {
+                                callback = pathTo;
+                                pathTo = '/';//fallback to default
+                            }
+
+                            var pluginName = this.name;
+                            app.all(pathTo, function(req, res, next) {
+                                if (pluginConfig[pluginName] && callback && typeof callback === 'function') {
+                                    callback(req, res, next);
+                                }
+                                else {
+                                    next();
+                                }
+                            });
+                        }
+                    }, countlyDb, express);
+                }
             }
             catch (ex) {
                 console.error(ex.stack);
@@ -675,9 +993,9 @@ var pluginManager = function pluginManager() {
             methodCache[method] = [];
             for (let i = 0; i < plugs.length; i++) {
                 try {
-                    if (plugs[i][method]) {
-                        methodCache[method].push(plugs[i]);
-                        if (plugs[i][method](params)) {
+                    if (plugs[i].plugin && plugs[i].plugin[method]) {
+                        methodCache[method].push(plugs[i].plugin);
+                        if (plugs[i].plugin[method](params)) {
                             res = true;
                         }
                     }
@@ -690,12 +1008,137 @@ var pluginManager = function pluginManager() {
         return res;
     };
 
+
+    /**
+    * Call specific predefined methods of plugin's frontend app.js modules which are expected to return a promise which resolves to an object
+    * All results will then be merged into one object, ensure objects returned by promises have unique keys
+    * 
+    * @param {string} method - method name
+    * @param {object} params - object with arguments
+    * @returns {boolean} if any of plugins had that method
+    **/
+    this.callPromisedAppMethod = async function(method, params) {
+        var promises = [];
+        if (methodPromiseCache[method]) {
+            if (methodPromiseCache[method].length > 0) {
+                for (let i = 0; i < methodPromiseCache[method].length; i++) {
+                    try {
+                        let ret = methodPromiseCache[method][i][method](params);
+                        if (ret) {
+                            promises.push(ret);
+                        }
+                    }
+                    catch (ex) {
+                        console.error(ex.stack);
+                    }
+                }
+            }
+        }
+        else {
+            methodPromiseCache[method] = [];
+            for (let i = 0; i < plugs.length; i++) {
+                try {
+                    if (plugs[i].plugin && plugs[i].plugin[method]) {
+                        methodPromiseCache[method].push(plugs[i].plugin);
+                        let ret = plugs[i].plugin[method](params);
+                        if (ret) {
+                            promises.push(ret);
+                        }
+                    }
+                }
+                catch (ex) {
+                    console.error(ex.stack);
+                }
+            }
+        }
+        let results = await Promise.all(promises);
+        return results.reduce((acc, v) => {
+            if (v) {
+                for (let k in v) {
+                    acc[k] = acc[k] || v[k];
+                }
+            }
+            return acc;
+        }, {});
+    };
+
+    this.fixOrderBasedOnDependency = function(plugs_list) {
+        var map0 = {};
+        var new_list = [];
+        for (var z = 0; z < plugs_list.length; z++) {
+            map0[plugs_list[z]] = true;
+        }
+        /**
+         * 
+         * @param {string} pluginName - pluginName 
+         */
+        function add_Me(pluginName) {
+            if (dependencyMap) {
+                if (dependencyMap && dependencyMap.dpcs && dependencyMap.dpcs[pluginName] && dependencyMap.dpcs[pluginName].up) {
+                    for (var z1 = 0; z1 < dependencyMap.dpcs[pluginName].up.length; z1++) {
+                        if (map0[dependencyMap.dpcs[pluginName].up[z1]]) {
+                            add_Me(dependencyMap.dpcs[pluginName].up[z1]);
+                        }
+                    }
+                }
+            }
+            if (map0[pluginName]) {
+                new_list.push(pluginName);
+                map0[pluginName] = false;
+            }
+        }
+
+        for (var plugname in map0) {
+            add_Me(plugname);
+        }
+        return new_list;
+    };
+
     /**
     * Get array of enabled plugin names
+	* @param {boolean} returnFullList  - if true will return all available plugins
     * @returns {array} with plugin names
     **/
-    this.getPlugins = function() {
-        return plugins;
+    this.getPlugins = function(returnFullList) {
+        //fix it to return only enabled based on db settings
+        var list = [];
+        if (returnFullList) {
+            for (var key2 in fullPluginsMap) {
+                list.push(key2);
+            }
+            if (pluginConfig && Object.keys(pluginConfig).length > 0) {
+                for (var key0 in pluginConfig) {
+                    if (!fullPluginsMap[key0]) {
+                        list.push(key0);
+                    }
+                }
+            }
+            else {
+                for (var kk = 0; kk < plugins.length; kk++) {
+                    if (!fullPluginsMap[plugins[kk]]) {
+                        list.push(plugins[kk]);
+                    }
+                }
+            }
+            return this.fixOrderBasedOnDependency(list);
+        }
+        else {
+            if (pluginConfig && Object.keys(pluginConfig).length > 0) {
+                for (var key in pluginConfig) {
+                    if (pluginConfig[key]) {
+                        list.push(key);
+                    }
+                }
+            }
+
+            for (var k = 0; k < plugins.length; k++) {
+                if (typeof pluginConfig[plugins[k]] === 'undefined') {
+                    list.push(plugins[k]);
+                }
+            }
+
+            return this.fixOrderBasedOnDependency(list);
+        }
     };
 
     /**
@@ -734,7 +1177,8 @@ var pluginManager = function pluginManager() {
     * @returns {boolean} if plugin is enabled
     **/
     this.isPluginEnabled = function(plugin) {
-        if (plugins.indexOf(plugin) === -1) {
+        var enabledPlugins = this.getPlugins();
+        if (coreList.indexOf(plugin) === -1 && enabledPlugins.indexOf(plugin) === -1) { //it is plugin, but it is not enabled
             return false;
         }
         return true;
@@ -889,6 +1333,63 @@ var pluginManager = function pluginManager() {
         });
     };
 
+    this.processPluginInstall = function(db, name, callback) {
+        var self = this;
+        var should_enable = true;
+        if (typeof name !== "string" && name.name) {
+            if (name.enable === false || name.enable === true) {
+                should_enable = name.enable;
+            }
+            name = name.name;
+        }
+        db.collection("plugins").remove({'_id': 'install_' + name, 'time': {'$lt': Date.now() - 60 * 1000 * 60}}, function(err) {
+            if (err) {
+                console.log(err);
+                callback();
+            }
+            else {
+                db.collection("plugins").insert({'_id': 'install_' + name, 'time': Date.now()}, {ignore_errors: [11000]}, function(err2) {
+                    if (err2) {
+                        if (err2.code && err2.code !== 11000) {
+                            console.log(err2);
+                        }
+                        callback();
+                    }
+                    else {
+                        self.installPlugin(name, function(errors) {
+                            if (!errors) {
+                                console.log("Install is finished fine. Updating state in database");
+                                var query = {_id: "plugins"};
+                                query["plugins." + name] = {"$ne": !should_enable};
+                                var update = {};
+                                update["plugins." + name] = should_enable;
+                                db.collection("plugins").update(query, {"$set": update}, {upsert: true}, function(err3, res) {
+                                    console.log('plugins document updated');
+                                    if (err3) {
+                                        console.log(err3);
+                                    }
+                                    console.log(JSON.stringify(res));
+                                    if (callback) {
+                                        callback();
+                                    }
+                                    db.collection("plugins").remove({'_id': 'install_' + name}, function(err5) {
+                                        if (err5) {
+                                            console.log(err5);
+                                        }
+                                    });
+                                });
+                            }
+                            else {
+                                console.log("Install is finished with errors");
+                                console.log(JSON.stringify(errors));
+                                callback();
+                            }
+                        });
+                    }
+                });
+            }
+        });
+    };
     /**
     * Procedure to install plugin
     * @param {string} plugin - plugin name
@@ -907,8 +1408,17 @@ var pluginManager = function pluginManager() {
                 return resolve(errors);
             }
             var cwd = eplugin ? eplugin.rfs : path.join(__dirname, plugin);
-            if (!self.getConfig("api").offline_mode) {
-                const cmd = spawn('sudo', ["npm", "install", "--unsafe-perm"], {cwd: cwd});
+            //if we are on docker skip npm install. 
+            if (process && process.env && process.env.COUNTLY_CONTAINER && !process.env.FORCE_NPM_INSTALL) {
+                console.log('Skipping on docker');
+                resolve(errors);
+            }
+            else if (!self.getConfig("api").offline_mode) {
+                var args = ["install"];
+                if (apiCountlyConfig.symlinked === true) {
+                    args.unshift(...["--preserve-symlinks", "--preserve-symlinks-main"]);
+                }
+                const cmd = spawn('npm', args, {cwd: cwd});
                 var error2 = "";
 
                 cmd.stdout.on('data', (data) => {
@@ -919,7 +1429,8 @@ var pluginManager = function pluginManager() {
                     error2 += data;
                 });
 
-                cmd.on('error', function() {
+                cmd.on('error', function(error) {
+                    console.log(error);
                     errors = true;
                 });
 
@@ -937,8 +1448,11 @@ var pluginManager = function pluginManager() {
             }
         }).then(function(result) {
             var scriptPath = path.join(__dirname, plugin, 'install.js');
-            var m = cp.spawn("nodejs", [scriptPath]);
-
+            var args = [scriptPath];
+            if (apiCountlyConfig.symlinked === true) {
+                args.unshift(...["--preserve-symlinks", "--preserve-symlinks-main"]);
+            }
+            var m = cp.spawn("nodejs", args);
             m.stdout.on('data', (data) => {
                 console.log(data.toString());
             });
@@ -1006,7 +1520,11 @@ var pluginManager = function pluginManager() {
             }
         }).then(function(result) {
             var scriptPath = path.join(__dirname, plugin, 'install.js');
-            var m = cp.spawn("nodejs", [scriptPath]);
+            var args = [scriptPath];
+            if (apiCountlyConfig.symlinked === true) {
+                args.unshift(...["--preserve-symlinks", "--preserve-symlinks-main"]);
+            }
+            var m = cp.spawn("nodejs", args);
 
             m.stdout.on('data', (data) => {
                 console.log(data.toString());
@@ -1037,7 +1555,11 @@ var pluginManager = function pluginManager() {
         callback = callback || function() {};
         var scriptPath = path.join(__dirname, plugin, 'uninstall.js');
         var errors = false;
-        var m = cp.spawn("nodejs", [scriptPath]);
+        var args = [scriptPath];
+        if (apiCountlyConfig.symlinked === true) {
+            args.unshift(...["--preserve-symlinks", "--preserve-symlinks-main"]);
+        }
+        var m = cp.spawn("nodejs", args);
 
         m.stdout.on('data', (data) => {
             console.log(data.toString());
@@ -1240,21 +1762,47 @@ var pluginManager = function pluginManager() {
     * @returns {string} modified connection string
     **/
     this.replaceDatabaseString = function(str, db) {
+        if (!db) {
+            db = "countly";
+        }
         var i = str.lastIndexOf('/countly');
         var k = str.lastIndexOf('/' + db);
         if (i !== k && i !== -1 && db) {
             return str.substr(0, i) + "/" + db + str.substr(i + ('/countly').length);
+        }
+        else if (i === -1 && k === -1) {
+            //no db found in the string, we should insert the needed one
+            var urlparts = str.split("://");
+            if (typeof urlparts[1] === "string") {
+                var parts = urlparts[1].split("/");
+                if (parts.length === 1) {
+                    parts[0] += "/" + db;
+                }
+                else {
+                    parts[parts.length - 1] = db + parts[parts.length - 1];
+                }
+                urlparts[1] = parts.join("/");
+            }
+            return urlparts.join("://");
         }
         return str;
     };
 
     this.connectToAllDatabases = async() => {
         let dbs = ['countly', 'countly_out', 'countly_fs'];
-        if (this.isPluginEnabled('drill')) {
+        if (fs.existsSync(path.resolve(__dirname, 'drill'))) {
             dbs.push('countly_drill');
         }
 
-        const databases = await Promise.all(dbs.map(this.dbConnection.bind(this)));
+        let databases = [];
+        if (apiCountlyConfig && apiCountlyConfig.shared_connection) {
+            console.log("using shared connection pool");
+            databases = await this.dbConnection(dbs);
+        }
+        else {
+            console.log("using separate connection pool");
+            databases = await Promise.all(dbs.map(this.dbConnection.bind(this)));
+        }
         const [dbCountly, dbOut, dbFs, dbDrill] = databases;
 
         let common = require('../api/utils/common');
@@ -1262,7 +1810,12 @@ var pluginManager = function pluginManager() {
         common.outDb = dbOut;
         require('../api/utils/countlyFs').setHandler(dbFs);
         common.drillDb = dbDrill;
-
+        var self = this;
+        await new Promise(function(resolve) {
+            self.loadConfigs(common.db, function() {
+                resolve();
+            });
+        });
         return databases;
     };
 
@@ -1274,13 +1827,16 @@ var pluginManager = function pluginManager() {
     this.dbConnection = async function(config) {
         var db, maxPoolSize = 10;
         var mngr = this;
+        var dbList = [];
 
         if (!cluster.isMaster) {
             //we are in worker
             maxPoolSize = 100;
         }
-        if (process.argv[1] && process.argv[1].endsWith('executor.js')) {
-            maxPoolSize = 3;
+
+        var useConfig = JSON.parse(JSON.stringify(countlyConfig));
+        if (process.argv[1] && process.argv[1].endsWith('api/api.js') && !cluster.isMaster) {
+            useConfig = JSON.parse(JSON.stringify(apiCountlyConfig));
         }
         if (typeof config === "string") {
             db = config;
@@ -1293,7 +1849,7 @@ var pluginManager = function pluginManager() {
                 }
                 catch (ex) {
                     //user default config
-                    config = JSON.parse(JSON.stringify(countlyConfig));
+                    config = useConfig;
                 }
                 if (this.dbConfigEnvs[confDb]) {
                     config = configextender(this.dbConfigEnvs[confDb], config, process.env);
@@ -1301,11 +1857,15 @@ var pluginManager = function pluginManager() {
             }
             else {
                 //user default config
-                config = JSON.parse(JSON.stringify(countlyConfig));
+                config = useConfig;
             }
         }
+        else if (Array.isArray(config)) {
+            dbList = config;
+            config = useConfig;
+        }
         else {
-            config = config || JSON.parse(JSON.stringify(countlyConfig));
+            config = config || useConfig;
         }
 
         if (config && typeof config.mongodb === "string") {
@@ -1316,6 +1876,10 @@ var pluginManager = function pluginManager() {
         }
         else {
             maxPoolSize = config.mongodb.max_pool_size || maxPoolSize;
+        }
+
+        if (process.argv[1] && process.argv[1].endsWith('executor.js')) {
+            maxPoolSize = 3;
         }
 
         var dbName;
@@ -1411,8 +1975,46 @@ var pluginManager = function pluginManager() {
             return;
         }
 
-        client.on('commandFailed', (event) => logDbRead.e("commandFailed %j", event));
-        client.on('serverHeartbeatFailed', (event) => logDbRead.d("serverHeartbeatFailed %j", event));
+        /**
+         * Log driver debug logs
+         * @param {String} eventName - name of the event to log
+         * @param {Object} logObject - log object where to write event
+         * @param {String} logLevel - log level
+         */
+        function logDriver(eventName, logObject, logLevel) {
+            logLevel = logLevel || "d";
+            client.on(eventName, (event) => logObject[logLevel](eventName + " %j", event));
+        }
+
+        //connection pool
+        logDriver("connectionPoolCreated", logDriverDb);
+        logDriver("connectionPoolReady", logDriverDb);
+        logDriver("connectionPoolClosed", logDriverDb);
+        logDriver("connectionCreated", logDriverDb);
+        logDriver("connectionReady", logDriverDb);
+        logDriver("connectionClosed", logDriverDb);
+        logDriver("connectionCheckOutStarted", logDriverDb);
+        logDriver("connectionCheckOutFailed", logDriverDb);
+        logDriver("connectionCheckedOut", logDriverDb);
+        logDriver("connectionCheckedIn", logDriverDb);
+        logDriver("connectionPoolCleared", logDriverDb);
+
+        //SDAM
+        logDriver("serverOpening", logDriverDb);
+        logDriver("serverClosed", logDriverDb, "i");
+        logDriver("serverDescriptionChanged", logDriverDb, "i");
+        logDriver("topologyOpening", logDriverDb);
+        logDriver("topologyClosed", logDriverDb);
+        logDriver("topologyDescriptionChanged", logDriverDb, "i");
+        logDriver("serverHeartbeatStarted", logDriverDb);
+        logDriver("serverHeartbeatSucceeded", logDriverDb);
+        logDriver("serverHeartbeatFailed", logDriverDb, "e");
+
+        //commands
+        logDriver("commandStarted", logDriverDb);
+        logDriver("commandSucceeded", logDriverDb);
+        logDriver("commandFailed", logDriverDb, "e");
+
 
         client._db = client.db;
 
@@ -1420,10 +2022,12 @@ var pluginManager = function pluginManager() {
             return mngr.wrapDatabase(client._db(database, options), client, db_name, dbName, dbOptions);
         };
 
-        if (db_name === "countly") {
-            var wrapped = client.db(db_name);
-            await this.fetchMaskingConf({db: wrapped});
-            return wrapped;
+        if (dbList.length) {
+            var ret = [];
+            for (let i = 0; i < dbList.length; i++) {
+                ret.push(client.db(dbList[i]));
+            }
+            return ret;
         }
         else {
             return client.db(db_name);
@@ -1448,8 +2052,8 @@ var pluginManager = function pluginManager() {
                 hashMap[crypto.createHash('sha1').update(eventsDb[z].list[i] + eventsDb[z]._id + "").digest('hex')] = {"a": eventsDb[z]._id, "e": eventsDb[z].list[i]};
             }
 
-            var internalDrillEvents = ["[CLY]_session", "[CLY]_view", "[CLY]_nps", "[CLY]_crash", "[CLY]_action", "[CLY]_session", "[CLY]_survey", "[CLY]_star_rating", "[CLY]_apm_device", "[CLY]_apm_network", "[CLY]_push_action"];
-            var internalEvents = ["[CLY]_session", "[CLY]_view", "[CLY]_nps", "[CLY]_crash", "[CLY]_action", "[CLY]_session", "[CLY]_survey", "[CLY]_star_rating", "[CLY]_apm_device", "[CLY]_apm_network", "[CLY]_push_action"];
+            var internalDrillEvents = ["[CLY]_session", "[CLY]_crash", "[CLY]_view", "[CLY]_action", "[CLY]_push_action", "[CLY]_push_sent", "[CLY]_star_rating", "[CLY]_nps", "[CLY]_survey", "[CLY]_apm_network", "[CLY]_apm_device", "[CLY]_consent"];
+            var internalEvents = ["[CLY]_session", "[CLY]_crash", "[CLY]_view", "[CLY]_action", "[CLY]_push_action", "[CLY]_push_sent", "[CLY]_star_rating", "[CLY]_nps", "[CLY]_survey", "[CLY]_apm_network", "[CLY]_apm_device", "[CLY]_consent"];
 
             if (internalDrillEvents) {
                 for (let i = 0; i < internalDrillEvents.length; i++) {
@@ -1469,9 +2073,64 @@ var pluginManager = function pluginManager() {
 
     };
 
+    /**
+    * Checks if any item in object tree and subrtree is true. Recursive.
+    * @param {object} myOb - object
+    * @returns {boolean} true or false
+    **/
+    function hasAnyValueTrue(myOb) {
+        if (typeof myOb === 'object' && Object.keys(myOb) && Object.keys(myOb).length > 0) {
+            var value = false;
+            for (var key in myOb) {
+                value = value || hasAnyValueTrue(myOb[key]);
+            }
+            return value;
+        }
+        else {
+            if (myOb === true) {
+                return true;
+            }
+            else {
+                return false;
+            }
+        }
+    }
+    this.isAnyMasked = function() {
+        var result = false;
+        if (masking && masking.apps) {
+            for (var app in masking.apps) {
+                if (masking.apps[app]) {
+                    result = result || hasAnyValueTrue(masking.apps[app]);
+                    if (result) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return result;
+    };
+
     this.getMaskingSettings = function(appID) {
-        if (masking && masking.apps && masking.apps[appID]) {
-            return JSON.parse(JSON.stringify(masking.apps[appID]));
+        if (appID === 'all') {
+            if (masking && masking.apps) {
+                try {
+                    return JSON.parse(JSON.stringify(masking.apps));
+                }
+                catch (ex) {
+                    return {};
+                }
+            }
+            else {
+                return {};
+            }
+        }
+        else if (masking && masking.apps && masking.apps[appID]) {
+            try {
+                return JSON.parse(JSON.stringify(masking.apps[appID]));
+            }
+            catch (ex) {
+                return {};
+            }
         }
         else {
             return {};
@@ -1491,9 +2150,16 @@ var pluginManager = function pluginManager() {
     this.getEHashes = function(appID) {
         var map = {};
         if (masking && masking.hashMap) {
-            for (var hash in masking.hashMap) {
-                if (masking.hashMap[hash].a === appID) {
-                    map[masking.hashMap[hash].e] = hash;
+            if (appID === 'all') {
+                for (var hash0 in masking.hashMap) {
+                    map[masking.hashMap[hash0].e] = hash0;
+                }
+            }
+            else {
+                for (var hash in masking.hashMap) {
+                    if (masking.hashMap[hash].a === appID) {
+                        map[masking.hashMap[hash].e] = hash;
+                    }
                 }
             }
         }
@@ -1560,7 +2226,58 @@ var pluginManager = function pluginManager() {
             }
         });
 
-        var findOptions = ["limit", "sort", "projection", "skip", "hint", "explain", "snapshot", "timeout", "tailable", "batchSize", "returnKey", "maxScan", "min", "max", "showDiskLoc", "comment", "raw", "promoteLongs", "promoteValues", "promoteBuffers", "readPreference", "partial", "maxTimeMS", "collation", "session"];
+        var findOptions = [
+            "allowDiskUse",
+            "allowPartialResults",
+            "authdb",
+            "awaitData",
+            "batchSize",
+            "bsonRegExp",
+            "checkKeys",
+            "collation",
+            "comment",
+            "dbName",
+            "enableUtf8Validation",
+            "explain",
+            "fieldsAsRaw",
+            "hint",
+            "ignoreUndefined",
+            "let",
+            "limit",
+            "max",
+            "maxAwaitTimeMS",
+            "maxScan",
+            "maxTimeMS",
+            "min",
+            "noCursorTimeout",
+            "noResponse",
+            "omitReadPreference",
+            "oplogReplay",
+            "partial",
+            "projection",
+            "promoteBuffers",
+            "promoteLongs",
+            "promoteValues",
+            "raw",
+            "readConcern",
+            "readPreference",
+            "retryWrites",
+            "returnKey",
+            "serializeFunctions",
+            "session",
+            "showDiskLoc",
+            "showRecordId",
+            "singleBatch",
+            "skip",
+            "snapshot",
+            "sort",
+            "tailable",
+            "timeout",
+            "timeoutMode",
+            "timeoutMS",
+            "useBigInt64",
+            "willRetryWrite"
+        ];
 
         countlyDb._collection_cache = {};
         //overwrite some methods

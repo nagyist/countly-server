@@ -16,7 +16,7 @@ var { getUserApps } = require('./../../../api/utils/rights.js');
 var configs = require('./../config', 'dont-enclose');
 var countlyMail = require('./../../../api/parts/mgmt/mail.js');
 var countlyStats = require('./../../../api/parts/data/stats.js');
-var request = require('request');
+var request = require('countly-request')(plugins.getConfig("security"));
 var url = require('url');
 var crypto = require('crypto');
 var argon2 = require('argon2');
@@ -43,17 +43,15 @@ if (membersUtility.countlyConfig.web && membersUtility.countlyConfig.web.track =
  * @property {object} emptyPermission - empty crud permission
  */
 membersUtility.emptyPermission = {
-    "permission": {
-        "c": {},
-        "r": {},
-        "u": {},
-        "d": {},
-        "_": {
-            "a": [],
-            "u": [
-                []
-            ]
-        }
+    "c": {},
+    "r": {},
+    "u": {},
+    "d": {},
+    "_": {
+        "a": [],
+        "u": [
+            []
+        ]
     }
 };
 
@@ -163,7 +161,14 @@ function sha512Hash(str, addSalt) {
  * @param {Function} callback | Callback function
  */
 function verifyMemberArgon2Hash(username, password, countlyDb, callback) {
-    countlyDb.collection('members').findOne({$and: [{ $or: [ {"username": username}, {"email": username}]}]}, (err, member) => {
+    var emailVal = null;
+    if (username && typeof username === 'string') {
+        emailVal = username.toString().toLocaleLowerCase();
+    }
+    else {
+        emailVal = username;
+    }
+    countlyDb.collection('members').findOne({$and: [{ $or: [ {"username": username}, {"email": emailVal}]}]}, (err, member) => {
         if (member) {
             if (isArgon2Hash(member.password)) {
                 verifyArgon2Hash(member.password, password).then(match => {
@@ -250,6 +255,12 @@ function setLoggedInVariables(req, member, countlyDb, callback) {
     if (req.session.temporary_token) {
         reuse = false;
     }
+    if (req.licenseError) {
+        req.session.licenseError = req.licenseError;
+    }
+    if (req.licenseNotification) {
+        req.session.licenseNotification = req.licenseNotification;
+    }
 
     authorize.save({
         db: countlyDb,
@@ -331,9 +342,7 @@ membersUtility.verifyCredentials = function(username, password, callback) {
 *   membersUtility.updateStats(member );
 **/
 membersUtility.updateStats = function(member) {
-    var countlyConfig = membersUtility.countlyConfig;
-
-    if ((!countlyConfig.web.track || countlyConfig.web.track === "GA" && member.global_admin || countlyConfig.web.track === "noneGA" && !member.global_admin) && !plugins.getConfig("api").offline_mode) {
+    if (plugins.getConfig('frontend').countly_tracking && !plugins.getConfig("api").offline_mode) {
         countlyStats.getUser(membersUtility.db, member, function(statsObj) {
             const userApps = getUserApps(member);
             var custom = {
@@ -345,13 +354,24 @@ membersUtility.updateStats = function(member) {
                 users: statsObj["total-users"]
             };
             var date = new Date();
+            let domain = plugins.getConfig('api').domain;
+
+            try {
+                // try to extract hostname from full domain url
+                const urlObj = new URL(domain);
+                domain = urlObj.hostname;
+            }
+            catch (_) {
+                // do nothing, domain from config will be used as is
+            }
+
             request({
                 uri: "https://stats.count.ly/i",
                 method: "GET",
                 timeout: 4E3,
                 qs: {
-                    device_id: member.email,
-                    app_key: "386012020c7bf7fcb2f1edf215f1801d6146913f",
+                    device_id: domain,
+                    app_key: "e70ec21cbe19e799472dfaee0adb9223516d238f",
                     timestamp: Math.round(date.getTime() / 1000),
                     hour: date.getHours(),
                     dow: date.getDay(),
@@ -406,6 +426,7 @@ membersUtility.login = function(req, res, callback) {
             membersUtility.updateStats(member);
 
             req.session.regenerate(function() {
+
                 // will have a new session here
                 var update = {last_login: Math.round(new Date().getTime() / 1000)};
                 if (typeof member.password_changed === "undefined") {
@@ -478,6 +499,7 @@ membersUtility.loginWithExternalAuthentication = function(req, res, callback) {
             membersUtility.updateStats(member);
 
             req.session.regenerate(function() {
+
                 // will have a new session here
                 var update = {last_login: Math.round(new Date().getTime() / 1000)};
 
@@ -574,6 +596,7 @@ membersUtility.loginWithToken = function(req, callback) {
                 }
                 else {
                     plugins.callMethod("tokenLoginSuccessful", {req: req, data: {username: member.username}});
+
                     if (valid.temporary) {
                         req.session.temporary_token = true;
                     }
@@ -687,6 +710,7 @@ membersUtility.setup = function(req, callback) {
                 },
             };
             var memberCreateValidation = common.validateArgs(req.body, argProps, true);
+
             if (!(req.body = memberCreateValidation.obj)) {
                 callback({
                     message: memberCreateValidation.errors,
@@ -876,18 +900,24 @@ membersUtility.settings = function(req, callback) {
             callback(false, "user-settings.api-key-length");
             return;
         }
-        if (!req.body.api_key.match(/^[0-9a-zA-Z]+([0-9]+)([a-z]+)[0-9a-zA-Z]+$/)) {
+        if (!req.body.api_key.match(/^[0-9a-zA-Z]+([0-9]+)([a-zA-Z]+)[0-9a-zA-Z]+$/)) {
             callback(false, "user-settings.api-key-restrict");
             return;
         }
 
+        req.body.full_name = (req.body.full_name + "").trim();
         req.body.username = (req.body.username + "").trim();
+        if (req.body.username === "") {
+            callback(false, "management-users.username-required");
+            return;
+        }
         if (req.body.member_image && req.body.member_image !== "delete") {
             updatedUser.member_image = req.body.member_image;
         }
         if (req.body.member_image === "delete") {
             updatedUser.member_image = "";
         }
+        updatedUser.full_name = req.body.full_name;
         updatedUser.username = req.body.username;
         updatedUser.api_key = req.body.api_key;
         if (req.body.lang) {
@@ -1073,7 +1103,7 @@ membersUtility.updateMember = async function(query = {}, data = {}, upsert = tru
         catch (ex) {
             return reject(ex);
         }
-        delete copy._id; // update on the path '_id' would modify the immutable field '_id'
+
         this.db.collection('members').update(query, { $set: copy }, { upsert }, (err) => {
             if (err) {
                 reject(err);
@@ -1120,7 +1150,7 @@ membersUtility.createMember = async function(data, provider = '', deleteDuplicat
     if (!data || !Object.keys(data).length) {
         throw new Error('Invalid user data provided');
     }
-    user._id = data._id || data.id || data.sub || data.username;
+    user.provider_id = data._id || data.id || data.sub || data.username;
     user.email = data.email || '';
     user.username = data.username || data.email;
     user.full_name = data.full_name || data.name || `${data.firstName} ${data.lastName}` || "";
@@ -1132,7 +1162,19 @@ membersUtility.createMember = async function(data, provider = '', deleteDuplicat
     user.isAD = (provider === 'ad' || provider === 'azure');
     user.isCognito = provider === 'cognito';
 
-    user.created_at = data.created_at || Math.floor(((new Date()).getTime()) / 1000);
+    const query = user.email
+        ? {
+            $or: [
+                { provider_id: user.provider_id },
+                { email: user.email }
+            ]
+        }
+        : { provider_id: user.provider_id };
+    const existingMembers = await membersUtility.findMembers(query);
+
+    if (existingMembers.length === 0) {
+        user.created_at = data.created_at || Math.floor(((new Date()).getTime()) / 1000);
+    }
 
     user.admin_of = data.admin_of || [];
     user.user_of = data.user_of || [];
@@ -1153,26 +1195,19 @@ membersUtility.createMember = async function(data, provider = '', deleteDuplicat
         user.admin_of.push(...data.marketing_of);
     }
 
-    const buffer = crypto.randomBytes(48);
-    user.api_key = data.api_key || common.md5Hash(buffer.toString('hex') + Math.random());
-    user.password = data.password || common.md5Hash(data.api_key);
+    if (existingMembers.length === 0 || !existingMembers[0].api_key) {
+        const buffer = crypto.randomBytes(48);
+        user.api_key = data.api_key || common.md5Hash(buffer.toString('hex') + Math.random());
+        user.password = data.password || common.md5Hash(data.api_key);
+
+    }
 
     // push approver permission
     user.approver = !!data.approver;
     user.approver_bypass = !!data.approver_bypass;
 
-    const query = user.email
-        ? {
-            $or: [
-                { _id: user._id },
-                { email: user.email }
-            ]
-        }
-        : { _id: user._id };
-
     try {
-        const existingMembers = await membersUtility.findMembers(query);
-        if (deleteDuplicate && (existingMembers.length >= 2 || (existingMembers.length === 1 && existingMembers[0]._id !== user._id))) {
+        if (deleteDuplicate && (existingMembers.length >= 2 || (existingMembers.length === 1 && existingMembers[0].provider_id !== user.provider_id))) {
             await membersUtility.removeMembers(query);
         }
 
