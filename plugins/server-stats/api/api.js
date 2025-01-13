@@ -10,6 +10,8 @@ var log = common.log('data-points:api');
 
 const FEATURE_NAME = 'server-stats';
 
+const internalEventsSkipped = ["[CLY]_orientation"];
+
 (function() {
 
     plugins.register("/permissions/features", function(ob) {
@@ -24,43 +26,61 @@ const FEATURE_NAME = 'server-stats';
     });
 
     /**
-    * Register to all requests to /plugins/drill to catch all events
-    * sent by plugins such as views and crashes
-    * @returns {undefined} Returns nothing
-    **/
-    plugins.register("/plugins/drill", function(ob) {
-        var eventCount = 0;
+     * @param {string} events - events to be mapped
+     * @returns {object} Returns object with event key and count
+     */
+    function eventCountMapper(events) {
+        const eventCountMap = {};
+        const eventKeyCount = 1;
+        for (let i = 0; i < events.length; i++) {
+            if (events[i].key) {
+                var key = events[i].key + "";
+                var is_internal = false;
+                if (key.indexOf('[CLY]') === 0) {
+                    if (key !== "[CLY]_session" && stats.internalEventsEnum[events[i].key]) {
+                        eventCountMap[stats.internalEventsEnum[events[i].key]] = eventKeyCount + (eventCountMap[stats.internalEventsEnum[events[i].key]] || 0);
+                    }
+                    is_internal = true;
+                }
+                else {
+                    eventCountMap.ce = eventKeyCount + (eventCountMap.ce || 0);
+                }
 
-        if (ob.events && Array.isArray(ob.events)) {
-            var events = ob.events;
-
-            for (var i = 0; i < events.length; i++) {
-                if (events[i].key) {
-                    eventCount += 1;
+                if (!is_internal || (plugins.internalDrillEvents.indexOf(key) > -1 && key !== "[CLY]_session")) {
+                    eventCountMap.e = eventKeyCount + (eventCountMap.e || 0);
+                }
+                else if (is_internal && plugins.internalDrillEvents.indexOf(key) === -1 && internalEventsSkipped.indexOf(key) === -1) {
+                    log.d("Unexpected internal event:" + key);
                 }
             }
-
-            stats.updateDataPoints(common.writeBatcher, ob.params.app_id, 0, eventCount, stats.isConsolidated(ob.params));
         }
-    });
+        return eventCountMap;
+    }
 
     /**
-    * Register to /sdk/end for requests that contain begin_session and events
-    * @returns {boolean} Returns boolean, always true
-    **/
-    plugins.register("/sdk/data_ingestion", function(ob) {
+     * 
+     * @param {object} ob - params
+     * @returns {boolean } Returns boolean, always true
+     */
+    function sdkDataIngestion(ob) {
         var params = ob.params,
             sessionCount = 0,
-            eventCount = 0;
+            eventCountMap = {},
+            appId = params.app_id || params.qstring.app_id;
+
+        try {
+            if (params.qstring.events && typeof params.qstring.events === 'string') {
+                params.qstring.events = JSON.parse(params.qstring.events);
+            }
+        }
+        catch (error) {
+            //
+        }
 
         if (!params.cancelRequest) {
             if (params.qstring.events && Array.isArray(params.qstring.events)) {
                 var events = params.qstring.events;
-                for (var i = 0; i < events.length; i++) {
-                    if (events[i].key) {
-                        eventCount += 1;
-                    }
-                }
+                eventCountMap = eventCountMapper(events);
             }
             // If the last end_session is received less than 15 seconds ago we will ignore
             // current begin_session request and mark this user as having an ongoing session
@@ -69,9 +89,31 @@ const FEATURE_NAME = 'server-stats';
             if (params.qstring.begin_session && (params.qstring.ignore_cooldown || !lastEndSession || (params.time.timestamp - lastEndSession) > plugins.getConfig("api", params.app && params.app.plugins, true).session_cooldown)) {
                 sessionCount++;
             }
-            stats.updateDataPoints(common.writeBatcher, params.app_id, sessionCount, eventCount, stats.isConsolidated(params));
+            stats.updateDataPoints(common.writeBatcher, appId, sessionCount, eventCountMap, stats.isConsolidated(params));
         }
         return true;
+    }
+
+    /**
+    * Register to all requests to /plugins/drill to catch all events
+    * sent by plugins such as views and crashes
+    * @returns {undefined} Returns nothing
+    **/
+    plugins.register("/plugins/drill", function(ob) {
+        var eventCountMap = {};
+
+        if (ob.events && Array.isArray(ob.events)) {
+            eventCountMap = eventCountMapper(ob.events);
+            stats.updateDataPoints(common.writeBatcher, ob.params.app_id, 0, eventCountMap, stats.isConsolidated(ob.params));
+        }
+    });
+
+    /**
+    * Register to /sdk/end for requests that contain begin_session and events
+    * @returns {boolean} Returns boolean, always true
+    **/
+    plugins.register("/sdk/data_ingestion", function(ob) {
+        sdkDataIngestion(ob);
     });
 
     /**

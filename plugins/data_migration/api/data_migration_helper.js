@@ -9,7 +9,7 @@ var countlyFs = require('../../../api/utils/countlyFs.js');
 var cp = require('child_process'); //call process
 var spawn = cp.spawn; //for calling comannd line
 const os = require('os'); //hostname, eol
-const request = require('request');
+const request = require('countly-request')(plugins.getConfig("security"));
 var common = require('../../../api/utils/common.js');
 
 module.exports = function(my_db) {
@@ -107,7 +107,7 @@ module.exports = function(my_db) {
                 }
                 else {
                     var havefile = false;
-                    var dir = __dirname + '/../export/' + exportid + '.tar.gz';
+                    var dir = __dirname + '/../export/' + common.sanitizeFilename(exportid) + '.tar.gz';
                     havefile = fs.existsSync(dir);
 
                     if (res) {
@@ -213,9 +213,9 @@ module.exports = function(my_db) {
         return new Promise(function(resolve, reject) {
             if (my_exportid !== "") {
                 if (remove_archive) {
-                    if (fs.existsSync(path.resolve(__dirname, './../' + folder + '/' + my_exportid + '.tar.gz'))) {
+                    if (fs.existsSync(path.resolve(__dirname, './../' + folder + '/' + common.sanitizeFilename(my_exportid) + '.tar.gz'))) {
                         try {
-                            fs.unlinkSync(path.resolve(__dirname, './../' + folder + '/' + my_exportid + '.tar.gz'));
+                            fs.unlinkSync(path.resolve(__dirname, './../' + folder + '/' + common.sanitizeFilename(my_exportid) + '.tar.gz'));
                         }
                         catch (err) {
                             log.e(err);
@@ -289,7 +289,7 @@ module.exports = function(my_db) {
                         });
                     }
                     else if (folder === 'import') {
-                        var infofile = path.resolve(__dirname, './../import/' + my_exportid + '.json');
+                        var infofile = path.resolve(__dirname, './../import/' + common.sanitizeFilename(my_exportid) + '.json');
                         if (fs.existsSync(infofile)) {
                             try {
                                 var data = fs.readFileSync(infofile);
@@ -532,6 +532,11 @@ module.exports = function(my_db) {
                     scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'cohortdata', '-q', '{ "a": "' + appid + '"}', '--out', my_folder]});
                     scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'cohorts', '-q', '{ "app_id": "' + appid + '"}', '--out', my_folder]});
                     scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'server_stats_data_points', '-q', '{ "a": "' + appid + '"}', '--out', my_folder]});
+                    scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'consent_history', '-q', '{ "app_id": "' + appid + '"}', '--out', my_folder]});
+                    scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'flow_schemas', '-q', '{ "app_id": "' + appid + '"}', '--out', my_folder]});
+                    scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'flow_data', '-q', '{ "app_id": "' + appid + '"}', '--out', my_folder]});
+                    scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'times_of_day', '-q', '{ "app_id": "' + appid + '"}', '--out', my_folder]});
+
                     //concurrent_users
                     scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'concurrent_users_max', '-q', '{"$or":[{ "app_id": "' + appid + '"},{ "_id": {"$in" :["' + appid + '_overall", "' + appid + '_overall_new"]}}]}', '--out', my_folder]});
                     scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', 'concurrent_users_alerts', '-q', '{ "app": "' + appid + '"}', '--out', my_folder]});
@@ -540,7 +545,7 @@ module.exports = function(my_db) {
                     var sameStructures = ["browser", "carriers", "cities", "consents", "crashdata", "density", "device_details", "devices", "langs", "sources", "users", "retention_daily", "retention_weekly", "retention_monthly", "server_stats_data_points"];
 
                     for (var k = 0; k < sameStructures.length; k++) {
-                        scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', sameStructures[k], '-q', '{ "_id": {"$regex": "' + appid + '_.*" }}', '--out', my_folder]});
+                        scripts.push({cmd: 'mongodump', args: [...dbargs, '--collection', sameStructures[k], '-q', '{ "_id": {"$regex": "^' + appid + '_.*" }}', '--out', my_folder]});
                     }
                     if (dbargs_out && dbargs_out.length) {
                         scripts.push({cmd: 'mongodump', args: [...dbargs_out, '--collection', "ab_testing_experiments" + appid, '--out', my_folder]});
@@ -578,6 +583,7 @@ module.exports = function(my_db) {
 
                         scripts.push({cmd: 'mongodump', args: [...dbargs_drill, '--collection', 'drill_bookmarks', '-q', '{ "app_id": "' + appid + '" }', '--out', my_folder]});
                         scripts.push({cmd: 'mongodump', args: [...dbargs_drill, '--collection', 'drill_meta' + appid, '--out', my_folder]});
+                        scripts.push({cmd: 'mongodump', args: [...dbargs_drill, '--collection', 'drill_meta', '-q', '{ "_id": {"$regex": "^' + appid + '_.*" }}', '--out', my_folder]});
                     }
                     //export symbolication files
                     if (data.aditional_files) {
@@ -897,7 +903,7 @@ module.exports = function(my_db) {
         var imported_apps = [];
         var imported_ids = [];
         try {
-            var data = fs.readFileSync(path.resolve(__dirname, "./../import/" + my_exportid + '.json'));
+            var data = fs.readFileSync(path.resolve(__dirname, "./../import/" + common.sanitizeFilename(my_exportid) + '.json'));
             var mydata = JSON.parse(data);
             if (mydata && mydata.app_names) {
                 imported_apps = mydata.app_names.split(',');
@@ -1115,9 +1121,15 @@ module.exports = function(my_db) {
                     }
 
                     update_progress(my_exportid, "sending", "progress", 0, "", true);
-                    var r = request.post({url: res.server_address + '/i/datamigration/import?exportid=' + my_exportid + '&auth_token=' + res.server_token}, requestCallback);
-                    var form = r.form();
-                    form.append("import_file", fs.createReadStream(dir));
+                    const fileData = {
+                        fileField: 'import_file',
+                        fileStream: fs.createReadStream(dir)
+                    };
+
+                    request.post({
+                        url: res.server_address + '/i/datamigration/import?exportid=' + my_exportid + '&auth_token=' + res.server_token,
+                        form: fileData
+                    }, requestCallback);
                 }
             }
         });
@@ -1141,7 +1153,7 @@ module.exports = function(my_db) {
             apps = apps.sort();
             var app_names = [];
             //clear out duplicates
-            for (let i = 1; i < apps.lenght - 1; i++) {
+            for (let i = 1; i < apps.length - 1; i++) {
                 if (apps[i - 1] === apps[i]) {
                     apps.splice(i, 1); i--;
                 }

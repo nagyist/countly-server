@@ -1,4 +1,4 @@
-/* global jQuery, Vue, _, CV, countlyCommon, countlyGlobal, CountlyHelpers, countlyTaskManager, _merge */
+/* global jQuery, Vue, _, CV, countlyCommon, countlyGlobal, CountlyHelpers, countlyTaskManager, _merge, Sortable */
 
 (function(countlyVue, $) {
 
@@ -274,7 +274,7 @@
                 if (elTableSorting.order) {
                     this.updateControlParams({
                         sort: [{
-                            field: elTableSorting.prop,
+                            field: elTableSorting.column.sortBy || elTableSorting.prop,
                             type: elTableSorting.order === "ascending" ? "asc" : "desc"
                         }]
                     });
@@ -320,11 +320,14 @@
                 }
                 var loadedState = localStorage.getItem(this.persistKey);
                 try {
+                    if (countlyGlobal.member.columnOrder && countlyGlobal.member.columnOrder[this.persistKey].tableSortMap) {
+                        defaultState.selectedDynamicCols = countlyGlobal.member.columnOrder[this.persistKey].tableSortMap;
+                    }
                     if (loadedState) {
                         var parsed = JSON.parse(loadedState);
-                        // disable loading of persisted searchQuery
-                        parsed.searchQuery = ""; // but we still need the field to be present for reactivity
-                        return parsed;
+                        defaultState.page = parsed.page;
+                        defaultState.perPage = parsed.perPage;
+                        defaultState.sort = parsed.sort;
                     }
                     return defaultState;
                 }
@@ -334,7 +337,31 @@
             },
             setControlParams: function() {
                 if (this.persistKey) {
-                    localStorage.setItem(this.persistKey, JSON.stringify(this.controlParams));
+                    var self = this;
+                    var localControlParams = {};
+                    localControlParams.page = this.controlParams.page;
+                    localControlParams.perPage = this.controlParams.perPage;
+                    localControlParams.sort = this.controlParams.sort;
+                    localStorage.setItem(this.persistKey, JSON.stringify(localControlParams));
+                    $.ajax({
+                        type: "POST",
+                        url: countlyGlobal.path + "/user/settings/column-order",
+                        data: {
+                            "tableSortMap": this.controlParams.selectedDynamicCols,
+                            "columnOrderKey": this.persistKey,
+                            _csrf: countlyGlobal.csrf_token
+                        },
+                        success: function() {
+                            //since countlyGlobal.member does not updates automatically till refresh
+                            if (!countlyGlobal.member.columnOrder) {
+                                countlyGlobal.member.columnOrder = {};
+                            }
+                            if (!countlyGlobal.member.columnOrder[self.persistKey]) {
+                                countlyGlobal.member.columnOrder[self.persistKey] = {};
+                            }
+                            countlyGlobal.member.columnOrder[self.persistKey].tableSortMap = self.controlParams.selectedDynamicCols;
+                        }
+                    });
                 }
             }
         }
@@ -644,10 +671,7 @@
                 if (selectedMenuItem && selectedMenuItem.item && selectedMenuItem.item.title) {
                     sectionName = this.i18n(selectedMenuItem.item.title);
                 }
-                var appName = "";
-                if (this.$store.getters["countlyCommon/getActiveApp"]) {
-                    appName = this.$store.getters["countlyCommon/getActiveApp"].name;
-                }
+                var appName = countlyGlobal.apps[countlyCommon.ACTIVE_APP_ID].name;
                 var date = countlyCommon.getDateRangeForCalendar();
 
                 var filename = siteName + " - " + appName + " - " + sectionName + " " + "(" + date + ")";
@@ -716,7 +740,7 @@
                             else {
                                 property = rows[r][columns[c].property];
                             }
-                            item[columns[c].label.toUpperCase()] = property;
+                            item[columns[c].label.toUpperCase()] = countlyCommon.unescapeHtml(property);
                         }
                         table.push(item);
                     }
@@ -914,6 +938,15 @@
                 type: Boolean,
                 default: false,
                 required: false
+            },
+            testId: {
+                type: String,
+                default: 'cly-datatable-n-test-id',
+                required: false
+            },
+            sortable: {
+                type: Boolean,
+                default: false
             }
         },
         data: function() {
@@ -951,6 +984,9 @@
                 }, {});
             },
             isLoading: function() {
+                if (this.externalParams && this.externalParams.skipLoading) {
+                    return false;
+                }
                 if (this.forceLoading === true) {
                     return true;
                 }
@@ -979,7 +1015,23 @@
                 };
             }
         },
-        template: CV.T('/javascripts/countly/vue/templates/datatable.html')
+        template: CV.T('/javascripts/countly/vue/templates/datatable.html'),
+        mounted: function() {
+            var self = this;
+            if (this.sortable) {
+                const table = document.querySelector('.el-table__body-wrapper tbody');
+                Sortable.create(table, {
+                    animation: 150,
+                    handle: '.el-table__row',
+                    onStart({oldIndex}) {
+                        self.$emit('drag-start', oldIndex);
+                    },
+                    onEnd({ newIndex, oldIndex }) {
+                        self.$emit('drag-end', { newIndex, oldIndex });
+                    }
+                });
+            }
+        }
     }));
 
     Vue.component("cly-datatable-undo-row", countlyBaseComponent.extend({

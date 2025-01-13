@@ -62,6 +62,11 @@ exports.renderView = function(options, cb) {
 
             var settings = {
                 headless: true,
+                env: {
+                    //https://github.com/hardkoded/puppeteer-sharp/issues/2633
+                    XDG_CONFIG_HOME: pathModule.resolve(__dirname, "../../.cache/chrome/tmp/.chromium"),
+                    XDG_CACHE_HOME: pathModule.resolve(__dirname, "../../.cache/chrome/tmp/.chromium")
+                },
                 args: ['--no-sandbox', '--disable-setuid-sandbox'],
                 ignoreHTTPSErrors: true,
                 userDataDir: pathModule.resolve(__dirname, "../../dump/chrome")
@@ -74,6 +79,7 @@ exports.renderView = function(options, cb) {
             var browser = await puppeteer.launch(settings);
 
             try {
+                log.d('Started rendering images');
                 var page = await browser.newPage();
 
                 page.on('console', (msg) => {
@@ -117,8 +123,11 @@ exports.renderView = function(options, cb) {
                 };
 
                 page.setDefaultNavigationTimeout(updatedTimeout);
-
-                await page.goto(host + '/login/token/' + token + '?ssr=true');
+                const resp = await page.goto(host + '/login/token/' + token + '?ssr=true');
+                const status = resp?.status();
+                if (status !== 200) {
+                    throw new Error(`Failed to open login page. Status: ${status}`);
+                }
 
                 await page.waitForSelector('countly', {timeout: updatedTimeout});
 
@@ -130,9 +139,14 @@ exports.renderView = function(options, cb) {
                     await page.waitForResponse(
                         function(response) {
                             var url = response.url();
+                            log.d("waitForRegex - Response Status: " + response.status() + ", URL: " + url);
                             if (waitForRegex.test(url) && response.status() === 200) {
                                 return true;
                             }
+                            else {
+                                return false;
+                            }
+
                         },
                         { timeout: updatedTimeout }
                     );
@@ -147,9 +161,14 @@ exports.renderView = function(options, cb) {
                         await page.waitForResponse(
                             function(response) {
                                 var url = response.url();
+                                log.d("waitForRegexAfterCbfn - Response Status: " + response.status() + ", URL: " + url);
                                 if (waitForRegex.test(url) && response.status() === 200) {
                                     return true;
                                 }
+                                else {
+                                    return false;
+                                }
+
                             },
                             { timeout: updatedTimeout }
                         );
@@ -236,7 +255,7 @@ exports.renderView = function(options, cb) {
                     image: image,
                     path: path
                 };
-
+                log.d('Finished rendering images');
                 return cb(null, imageData);
             }
             catch (e) {

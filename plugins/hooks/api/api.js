@@ -87,6 +87,17 @@ class Hooks {
         db && db.collection("hooks").find({"enabled": true}, {error_logs: 0}).toArray(function(err, result) {
             log.d("Fetch rules:", result, err, process.pid);
             if (result) {
+                //change profile group triggers to cohorts triggers. There are no events which starts with /profile-group, in reality it is just cohort events 
+                for (var z = 0; z < result.length; z++) {
+                    if (result[z].trigger && result[z].trigger.type === "InternalEventTrigger" && result[z].trigger.configuration && result[z].trigger.configuration.eventType) {
+                        if (result[z].trigger.configuration.eventType === "/profile-group/enter") {
+                            result[z].trigger.configuration.eventType = "/cohort/enter";
+                        }
+                        else if (result[z].trigger.configuration.eventType === "/profile-group/exit") {
+                            result[z].trigger.configuration.eventType = "/cohort/exit";
+                        }
+                    }
+                }
                 self._cachedRules = result;
                 self.syncRulesWithTrigger();
             }
@@ -217,6 +228,16 @@ const incrementRequestCounter = function(rule) {
 
 };
 
+const CheckEffectProperties = function(effect) {
+    var rules = {};
+    //todo: add more validation for effect types
+    if (effect) {
+        if (effect.type === "HTTPEffect") {
+            rules.url = { 'required': true, 'type': 'URL', 'regex': '^(?!.*(?:localhost|127\\.0\\.0\\.1|\\[::1\\])).*(?:https?|ftp):\\/\\/(?:[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)+|\\[(?:[a-fA-F0-9]{1,4}:){7}[a-fA-F0-9]{1,4}\\])(?::\\d{1,5})?(?:\\/\\S*)?$' };
+        }
+    }
+    return rules;
+};
 
 const CheckHookProperties = function(hookConfig) {
     const rules = {
@@ -252,13 +273,19 @@ plugins.register("/permissions/features", function(ob) {
 plugins.register("/i/hook/save", function(ob) {
     let paramsInstance = ob.params;
 
+
     validateCreate(ob.params, FEATURE_NAME, function(params) {
         let hookConfig = params.qstring.hook_config;
         try {
             hookConfig = JSON.parse(hookConfig);
             hookConfig = sanitizeConfig(hookConfig);
             if (!(common.validateArgs(hookConfig, CheckHookProperties(hookConfig)))) {
-                common.returnMessage(params, 200, 'Not enough args');
+                common.returnMessage(params, 400, 'Not enough args');
+                return true;
+            }
+
+            if (hookConfig && hookConfig.effects && !validateEffects(hookConfig.effects)) {
+                common.returnMessage(params, 400, 'Invalid configuration for effects');
                 return true;
             }
 
@@ -301,6 +328,27 @@ plugins.register("/i/hook/save", function(ob) {
     }, paramsInstance);
     return true;
 });
+
+/***
+ * @param {array} effects - array of effects
+ * @returns {boolean} isValid - true if all effects are valid
+ */
+function validateEffects(effects) {
+    let isValid = true;
+    if (effects) {
+        for (let i = 0; i < effects.length; i++) {
+            if (!(common.validateArgs(effects[i].configuration, CheckEffectProperties(effects[i])))) {
+                isValid = false;
+                break;
+            }
+        }
+    }
+
+    return isValid;
+
+}
+
+
 
 /**
  * build mongodb query for app level permission control
@@ -521,6 +569,11 @@ plugins.register("/i/hook/test", function(ob) {
 
             if (!(common.validateArgs(hookConfig, CheckHookProperties(hookConfig)))) {
                 common.returnMessage(params, 403, "hook config invalid");
+            }
+
+            if (hookConfig && hookConfig.effects && !validateEffects(hookConfig.effects)) {
+                common.returnMessage(params, 400, 'Config invalid');
+                return true;
             }
 
             // trigger process            

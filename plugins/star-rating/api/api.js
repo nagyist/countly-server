@@ -20,10 +20,31 @@ if (cohortsEnabled) {
     var cohorts = require('../../cohorts/api/parts/cohorts');
 }
 
+if (!surveysEnabled) {
+    plugins.setConfigs("feedback", {
+        main_color: "#0166D6",
+        font_color: "#0166D6",
+        feedback_logo: ""
+
+    });
+}
+
 const FEATURE_NAME = 'star_rating';
 
 const widgetProperties = {
     popup_header_text: {
+        required: false,
+        type: "String"
+    },
+    consent: {
+        required: false,
+        type: "Boolean"
+    },
+    links: {
+        required: false,
+        type: "Array"
+    },
+    finalText: {
         required: false,
         type: "String"
     },
@@ -99,6 +120,18 @@ const widgetProperties = {
         required: false,
         type: "String"
     },
+    logoType: {
+        required: false,
+        type: "String"
+    },
+    globalLogo: {
+        required: false,
+        type: "Boolean"
+    },
+    internalName: {
+        required: false,
+        type: "String"
+    },
     appearance: {
         required: false,
         type: "Object"
@@ -137,6 +170,19 @@ const widgetPropertyPreprocessors = {
         }
         catch (jsonParseError) {
             return null;
+        }
+    },
+    links: function(links) {
+        try {
+            return JSON.parse(links);
+        }
+        catch (jsonParseError) {
+            if (Array.isArray(links)) {
+                return links;
+            }
+            else {
+                return [];
+            }
         }
     },
     ratings_texts: function(ratingsTexts) {
@@ -316,6 +362,107 @@ function uploadFile(myfile, id, callback) {
         });
     });
 
+    /**
+* Used for file upload
+* @param {string} myname - input name
+* @param {object} myfile - file object
+* @returns {object} Promise
+**/
+    function uploadFeedbackFile(myname, myfile) {
+        return new Promise(function(resolve, reject) {
+            var tmp_path = myfile.path;
+            var type = myfile.type;
+            if (myfile.size > 1.5 * 1024 * 1024) {
+                fs.unlink(tmp_path, function() {});
+                reject(Error("feedback.image-error"));
+            }
+            else {
+                fs.readFile(tmp_path, (err, data) => {
+                    if (err) {
+                        reject(Error("feedback.imagee-error"));
+                    }
+                    //convert file to data
+                    if (data) {
+                        try {
+                            var data_uri_prefix = "data:" + type + ";base64,";
+                            var buf = Buffer.from(data);
+                            var image = buf.toString('base64');
+                            image = data_uri_prefix + image;
+                            countlyFs.gridfs.saveData("feedback", myname, image, {id: myname, writeMode: "overwrite"}, function(err2) {
+                                fs.unlink(tmp_path, function() {});
+                                if (err2) {
+                                    return reject(err2);
+                                }
+                                resolve();
+                            });
+                        }
+                        catch (SyntaxError) {
+                            reject(Error("feedback.imagee-error"));
+                        }
+                    }
+                    else {
+                        reject(Error("feedback.imagee-error"));
+                    }
+                });
+            }
+        });
+    }
+
+
+    /**
+     * @api {post} /i/feedback/upload
+     * @apiName Upload Image
+     * @apiGroup feedback
+     *
+     * @apiDescription Changes in Countly user interfaces logo
+     * @apiBody {File} logo
+     * 
+     * @apiSuccessExample {json} Success-Response:
+     * HTTP/1.1 200 OK
+     * {
+     *  "result": "Success"
+     * }
+     *
+     * @apiErrorExample {json} Error-Response:
+     * HTTP/1.1 400 Bad Request
+     * {
+     *  "result": "Missing parameter "api_key" or "auth_token""
+     * }
+    */
+    plugins.register("/i/feedback/upload", function(ob) {
+        // do not respond if this isn't feedback fetch request 
+        // or surveys plugin enabled
+        if (surveysEnabled) {
+            return false;
+        }
+
+        var params = ob.params;
+        validateUpdate(params, "global_plugins", function() {
+            var images = ["feedback_logo"];
+            var flag = 0;
+            if (params.files) {
+                for (let i = 0; i < images.length; i++) {
+                    if (params.files[images[i]]) {
+                        flag = 1;
+                        uploadFeedbackFile(images[i], params.files[images[i]]).then(function() {
+                            common.returnOutput(params, {"result": "Success"});
+                        }, function(err) {
+                            common.returnMessage(params, 400, err.message);
+                        });
+                        break;
+                    }
+                }
+                if (flag === 0) {
+                    uploadFeedbackFile(params.qstring.name, params.files.file).then(function() {
+                        common.returnOutput(params, {"result": "Success"});
+                    }, function(err) {
+                        common.returnMessage(params, 400, err.message);
+                    });
+                }
+            }
+        });
+        return true;
+    });
     /*
     * internal event that fetch ratings widget
     * and push them to passed widgets array.
@@ -542,7 +689,7 @@ function uploadFile(myfile, id, callback) {
             common.db.collection("feedback_widgets").findAndModify({"_id": widgetId }, {}, {$set: changes}, function(err, widget) {
                 if (!err && widget) {
                     widget = widget.value;
-                    if (cohortsEnabled && (widget.cohortID && !changes.targeting) || JSON.stringify(changes.targeting) !== JSON.stringify(widget.targeting)) {
+                    if (cohortsEnabled && ((widget.cohortID && !changes.targeting) || JSON.stringify(changes.targeting) !== JSON.stringify(widget.targeting))) {
                         if (widget.cohortID) {
                             if (changes.targeting) { //we are not setting to empty one
                                 //changes.targeting.app_id = widget.app_id + "";
@@ -575,9 +722,15 @@ function uploadFile(myfile, id, callback) {
                             if (!changes.targeting) {
                                 changes.targeting = {};
                             }
+                            if (!changes.targeting.user_segmentation) {
+                                changes.targeting.user_segmentation = '{"query":{},"queryText":""}';
+                            }
+                            if (!changes.targeting.steps) {
+                                changes.targeting.steps = '[]';
+                            }
                             changes.targeting.app_id = params.app_id + "";//has to be string
                             // eslint-disable-next-line
-                            createCohort(params, type, widgetId, changes.targeting, function(cohortId) { //create cohort using this 
+                            createCohort(params, type, widgetId, changes.targeting, function(cohortId) { //create cohort using this
                                 if (cohortId) {
                                     //update widget record to have this cohortId
                                     common.db.collection("feedback_widgets").findAndModify({ "_id": widgetId }, {}, { $set: { "cohortID": cohortId } }, function(/*err, widget*/) {
@@ -728,6 +881,7 @@ function uploadFile(myfile, id, callback) {
                     */
                     currEvent.segmentation.platform = currEvent.segmentation.platform || "undefined"; //because we have a lot of old data with undefined
                     currEvent.segmentation.rating = currEvent.segmentation.rating || "undefined";
+                    currEvent.segmentation.ratingSum = Number(currEvent.segmentation.rating) || 0;
                     currEvent.segmentation.widget_id = currEvent.segmentation.widget_id || "undefined";
                     currEvent.segmentation.app_version = currEvent.segmentation.app_version || "undefined";
                     currEvent.segmentation.platform_version_rate = currEvent.segmentation.platform + "**" + currEvent.segmentation.app_version + "**" + currEvent.segmentation.rating + "**" + currEvent.segmentation.widget_id + "**";
@@ -755,7 +909,7 @@ function uploadFile(myfile, id, callback) {
                     common.db.collection('feedback_widgets').update({
                         _id: common.db.ObjectID(currEvent.segmentation.widget_id)
                     }, {
-                        $inc: { ratingsSum: currEvent.segmentation.rating, ratingsCount: 1 }
+                        $inc: { ratingsSum: currEvent.segmentation.ratingSum, ratingsCount: 1 }
                     }, function(err) {
                         if (err) {
                             return false;
@@ -922,7 +1076,7 @@ function uploadFile(myfile, id, callback) {
             query.device_id = params.qstring.device_id;
         }
         if (params.qstring.sSearch && params.qstring.sSearch !== "") {
-            query.comment = {"$regex": new RegExp(".*" + params.qstring.sSearch + ".*", 'i')};
+            query.$text = { $search: params.qstring.sSearch };
         }
         if (params.qstring.iSortCol_0) {
             try {
@@ -1232,6 +1386,7 @@ function uploadFile(myfile, id, callback) {
                 }
                 else {
                     switch (params.qstring.period) {
+                    case "prevMonth":
                     case "month":
                     case "day":
                     case "yesterday":
@@ -1303,6 +1458,9 @@ function uploadFile(myfile, id, callback) {
         common.db.collection('feedback' + appId).ensureIndex({
             "ts": 1
         }, function() {});
+        common.db.collection('feedback' + appId).ensureIndex({
+            comment: 'text', email: 'text'
+        }, () => {});
     });
     plugins.register("/i/apps/delete", function(ob) {
         var appId = ob.appId;
@@ -1345,6 +1503,9 @@ function uploadFile(myfile, id, callback) {
             common.db.collection('feedback' + appId).ensureIndex({
                 "ts": 1
             }, function() {});
+            common.db.collection('feedback' + appId).ensureIndex({
+                comment: 'text', email: 'text'
+            }, () => {});
         });
         common.db.collection("events" + crypto.createHash('sha1').update("[CLY]_star_rating" + appId).digest('hex')).drop(function() {});
         if (common.drillDb) {
@@ -1364,6 +1525,9 @@ function uploadFile(myfile, id, callback) {
             common.db.collection('feedback' + appId).ensureIndex({
                 "ts": 1
             }, function() {});
+            common.db.collection('feedback' + appId).ensureIndex({
+                comment: 'text', email: 'text'
+            }, () => {});
         });
         common.db.collection("events" + crypto.createHash('sha1').update("[CLY]_star_rating" + appId).digest('hex')).drop(function() {});
         if (common.drillDb) {
@@ -1375,15 +1539,16 @@ function uploadFile(myfile, id, callback) {
         var oldUid = ob.oldUser.uid;
         var newUid = ob.newUser.uid;
         if (oldUid !== newUid) {
-            common.db.collection("feedback" + appId).update({
-                uid: oldUid
-            }, {
-                '$set': {
-                    uid: newUid
-                }
-            }, {
-                multi: true
-            }, function() {});
+            return new Promise(function(resolve, reject) {
+                common.db.collection("feedback" + appId).update({ uid: oldUid }, {'$set': { uid: newUid }}, { multi: true}, function(errUpdate) {
+                    if (errUpdate) {
+                        reject(errUpdate);
+                    }
+                    else {
+                        resolve();
+                    }
+                });
+            });
         }
     });
     plugins.register("/i/app_users/delete", async function(ob) {
@@ -1618,6 +1783,7 @@ function uploadFile(myfile, id, callback) {
             newAtt.cohort_name = "[CLY]_" + type + id;
 
             if (!newAtt.user_segmentation || !newAtt.user_segmentation.query) {
+                newAtt.user_segmentation = newAtt.user_segmentation || {};
                 newAtt.user_segmentation.query = "{}";
                 newAtt.user_segmentation.queryText = "{}";
             }

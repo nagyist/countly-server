@@ -2,11 +2,11 @@
 var DevicesTabView = countlyVue.views.create({
     template: CV.T("/core/device-and-type/templates/devices-tab.html"),
     mounted: function() {
-        this.$store.dispatch('countlyDevicesAndTypes/fetchDevices');
+        this.$store.dispatch('countlyDevicesAndTypes/fetchDevices', true);
     },
     methods: {
-        refresh: function() {
-            this.$store.dispatch('countlyDevicesAndTypes/fetchDevices');
+        refresh: function(force) {
+            this.$store.dispatch('countlyDevicesAndTypes/fetchDevices', force);
         },
         numberFormatter: function(row, col, value) {
             return countlyCommon.formatNumber(value, 0);
@@ -99,11 +99,11 @@ var DevicesTabView = countlyVue.views.create({
 var TypesTabView = countlyVue.views.create({
     template: CV.T("/core/device-and-type/templates/types-tab.html"),
     mounted: function() {
-        this.$store.dispatch('countlyDevicesAndTypes/fetchDeviceTypes');
+        this.$store.dispatch('countlyDevicesAndTypes/fetchDeviceTypes', true);
     },
     methods: {
-        refresh: function() {
-            this.$store.dispatch('countlyDevicesAndTypes/fetchDeviceTypes');
+        refresh: function(force) {
+            this.$store.dispatch('countlyDevicesAndTypes/fetchDeviceTypes', force);
         },
         numberFormatter: function(row, col, value) {
             return countlyCommon.formatNumber(value, 0);
@@ -185,11 +185,13 @@ var AllTabs = countlyVue.views.create({
                 {
                     title: CV.i18n('device_type.devices'),
                     name: "devices-tab",
+                    dataTestId: "devices",
                     component: DevicesTabView
                 },
                 {
                     title: CV.i18n('device_type.types'),
                     name: "types-tab",
+                    dataTestId: "type",
                     component: TypesTabView
                 }
             ]
@@ -266,6 +268,7 @@ countlyVue.container.registerTab("/analytics/technology", {
     name: "devices-and-types",
     permission: "core",
     title: CV.i18n('devices.devices-and-types.title'),
+    dataTestId: "devices-and-types",
     component: AllTabs,
     vuex: [{
         clyModel: countlyDevicesAndTypes
@@ -384,7 +387,7 @@ var GridComponent = countlyVue.views.create({
                 "carriers": this.i18n("carriers.title"),
                 "devices": this.i18n("devices.title"),
                 "browser": this.i18n("browser.title"),
-                "device_type": this.i18n("device_type.device_types"),
+                "device_type": this.i18n("device_type.title"),
             },
             tableMap: {
                 "u": this.i18n("common.table.total-users"),
@@ -423,6 +426,9 @@ var GridComponent = countlyVue.views.create({
         stackedBarOptions: function() {
             return this.calculateStackedBarOptionsFromWidget(this.data, this.tableMap);
         },
+        stackedBarTimeSeriesOptions: function() {
+            return this.calculateStackedBarTimeSeriesOptionsFromWidget(this.data, this.tableMap);
+        },
         pieGraph: function() {
             return this.calculatePieGraphFromWidget(this.data, this.tableMap);
         }
@@ -430,7 +436,13 @@ var GridComponent = countlyVue.views.create({
     methods: {
         refresh: function() {
             this.refreshNotes();
-        }
+        },
+        valFormatter: function(val) {
+            if (this.data.displaytype !== "value") {
+                return val + " %";
+            }
+            return val;
+        },
     }
 });
 
@@ -450,7 +462,10 @@ var DrawerComponent = countlyVue.views.create({
             ];
         },
         enabledVisualizationTypes: function() {
-            return ['pie-chart', 'bar-chart', 'table'];
+            if (this.scope.editedObject.breakdowns.indexOf("devices") !== -1 || this.scope.editedObject.breakdowns.indexOf("resolutions") !== -1 || this.scope.editedObject.breakdowns.indexOf("carriers") !== -1 || this.scope.editedObject.breakdowns.indexOf("density") !== -1) {
+                return ['pie-chart', 'bar-chart', 'table'];
+            }
+            return ['time-series', 'pie-chart', 'bar-chart', 'table'];
         },
         isMultipleMetric: function() {
             var multiple = false;
@@ -461,6 +476,9 @@ var DrawerComponent = countlyVue.views.create({
 
             return multiple;
         },
+        showDisplayType: function() {
+            return this.scope.editedObject.data_type === 'technology' && this.scope.editedObject.visualization === 'time-series';
+        }
     },
     mounted: function() {
         if (this.scope.editedObject.breakdowns.length === 0) {
@@ -514,6 +532,7 @@ countlyVue.container.registerData("/custom/dashboards/widget", {
                 data_type: "technology",
                 app_count: 'single',
                 metrics: [],
+                displaytype: "",
                 apps: [],
                 visualization: "",
                 breakdowns: ['devices'],

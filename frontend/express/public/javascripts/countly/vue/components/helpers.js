@@ -1,4 +1,4 @@
-/* global Vue, CV, app, countlyEvent, countlyGlobal, countlyAuth, VueJsonPretty, ElementTiptapPlugin*/
+/* global Vue, CV, app, countlyEvent, countlyGlobal, countlyAuth, VueJsonPretty, ElementTiptapPlugin, countlyCommon CountlyHelpers*/
 
 (function(countlyVue) {
 
@@ -15,7 +15,8 @@
             ],
             props: {
                 title: {type: String, required: false},
-                link: {type: String, required: false}
+                link: {type: String, required: false},
+                testId: {type: String, required: false}
             },
             methods: {
                 back: function() {
@@ -35,8 +36,8 @@
                     return this.i18n("common.back");
                 }
             },
-            template: '<a @click="back" class="cly-vue-back-link"> \n' +
-                            '<span class="text-medium bu-is-capitalized"><i class="fas fa-arrow-left bu-pr-3"></i>{{innerTitle}}</span>\n' +
+            template: '<a @click="back" class="cly-vue-back-link" :data-test-id="testId + \'-back-link-label\'"> \n' +
+                            '<span class="text-medium bu-is-capitalized"><i class="fas fa-arrow-left bu-pr-3" :data-test-id="testId + \'-back-link-icon\'"></i>{{innerTitle}}</span>\n' +
                         '</a>'
         }
     ));
@@ -44,18 +45,21 @@
     Vue.component("cly-in-page-notification", countlyBaseComponent.extend(
         {
             props: {
-                text: {type: String, required: false}
+                text: {type: String, required: false},
+                color: {type: String, required: false, default: "light-warning"},
             },
             computed: {
                 innerText: function() {
-                    if (this.text) {
-                        return this.text;
-                    }
-                    return "";
-                }
+                    return this.text || "";
+                },
+                dynamicClasses: function() {
+                    return ["cly-in-page-notification--" + this.color];
+                },
             },
-            template: '<div class="cly-in-page-notification color-cool-gray-100 bg-red-10 text-medium bu-p-2 center">\
-                            <slot><span v-html="innerText"></span></slot>\
+            template: '<div class="cly-in-page-notification text-medium bu-p-2" :class="dynamicClasses">\
+                            <slot name="innerText">\
+                                <span v-html="innerText"></span>\
+                            </slot>\
                         </div>'
         }
     ));
@@ -120,14 +124,32 @@
                 type: Boolean,
                 required: false,
                 default: false
+            },
+            isModal: {
+                type: Boolean,
+                required: false,
+                default: false
             }
         },
         computed: {
+            leftPadding: function() {
+                if (this.hasDiff && this.isModal) {
+                    var dd = document.getElementById('cly-vue-sidebar').getBoundingClientRect();
+                    var value = dd.width || 272;
+                    return "left:" + value + 'px; width:calc(100% - ' + value + 'px)';
+                }
+                else {
+                    return "";
+                }
+            },
             hasDiff: function() {
                 return this.diff.length > 0;
             },
             madeChanges: function() {
                 return this.i18n("common.diff-helper.changes", this.diff.length);
+            },
+            skinToApply: function() {
+                return this.isModal ? 'cly-vue-diff-helper-modal-wrapper' : '';
             }
         },
         methods: {
@@ -141,18 +163,33 @@
                 this.$emit("discard");
             }
         },
-        template: '<div class="cly-vue-diff-helper" v-if="hasDiff">\n' +
-                    '<slot name="main">\n' +
-                      '<div class="message">\n' +
-                          '<span class="text-dark">{{madeChanges}}</span>\n' +
-                          '<span class="text-dark">{{ i18n("common.diff-helper.keep") }}</span>\n' +
-                      '</div>\n' +
-                      '<div class="buttons">\n' +
-                          '<el-button skin="light" class="discard-btn" @click="discard" type="secondary">{{i18n(\'common.discard-changes\')}}</el-button>\n' +
-                         '<el-button skin="green" class="save-btn" :disabled="disabled" @click="save" type="success">{{i18n(\'common.save-changes\')}}</el-button>\n' +
-                      '</div>\n' +
-                    '</slot>\n' +
-                  '</div>'
+        template:
+				'<div :class="skinToApply" v-if="hasDiff" :style="leftPadding" >' +
+					'<div  v-if="isModal" class="cly-vue-diff-helper-modal bu-pl-2">\n' +
+						'<slot name="main">\n' +
+							'<div class="message">\n' +
+								'<span class="text-dark">{{madeChanges}}</span>\n' +
+								'<span class="text-dark">{{ i18n("common.diff-helper.keep") }}</span>\n' +
+							'</div>\n' +
+							'<div class="buttons">\n' +
+								'<el-button skin="light" class="discard-btn" @click="discard" type="secondary">{{i18n(\'common.discard-changes\')}}</el-button>\n' +
+								'<el-button skin="green" class="save-btn" :disabled="disabled" @click="save" type="success">{{i18n(\'common.save-changes\')}}</el-button>\n' +
+							'</div>\n' +
+						'</slot>\n' +
+					'</div>' +
+					'<div v-else class="cly-vue-diff-helper bu-pl-2">\n' +
+						'<slot name="main">\n' +
+							'<div class="message">\n' +
+								'<span class="text-dark">{{madeChanges}}</span>\n' +
+								'<span class="text-dark">{{ i18n("common.diff-helper.keep") }}</span>\n' +
+							'</div>\n' +
+							'<div class="buttons">\n' +
+								'<el-button skin="light" class="discard-btn" @click="discard" type="secondary">{{i18n(\'common.discard-changes\')}}</el-button>\n' +
+								'<el-button skin="green" class="save-btn" :disabled="disabled" @click="save" type="success">{{i18n(\'common.save-changes\')}}</el-button>\n' +
+							'</div>\n' +
+						'</slot>\n' +
+					'</div>' +
+				'</div>'
     }));
 
     Vue.component("cly-metric-cards", countlyBaseComponent.extend({
@@ -196,7 +233,10 @@
             color: {type: [String, Function, Array], default: ''},
             numberClasses: {type: String, default: 'bu-is-flex bu-is-align-items-baseline'},
             boxType: {type: Number, default: -1},
-            tooltip: {type: String, default: ''}
+            tooltip: {type: String, default: ''},
+            testId: {type: String, default: "cly-metric-card-test-id"},
+            isEstimate: {type: Boolean, default: false},
+            estimateTooltip: {type: String, default: ''}
         },
         computed: {
             formattedNumber: function() {
@@ -252,17 +292,18 @@
                 return classes;
             }
         },
-        template: '<div class="cly-vue-metric-card bu-column bu-is-flex" :class="topClasses" :style="metricStyles">\
-                        <div class="cly-vue-metric-card__wrapper bu-p-5 bu-is-flex bu-is-justify-content-space-between has-ellipsis">\
-                            <cly-progress-donut class="bu-pr-4 bu-is-flex" v-if="isPercentage" :color="color" :percentage="number"></cly-progress-donut>\
+        template: '<div class="cly-vue-metric-card bu-column bu-is-flex" :data-test-id="\'metric-card-\' + testId + \'-column\'" :class="topClasses" :style="metricStyles">\
+                        <div class="cly-vue-metric-card__wrapper bu-p-5 bu-is-flex bu-is-justify-content-space-between has-ellipsis" :data-test-id="\'metric-card-\' + testId + \'-column-wrapper\'">\
+                            <cly-progress-donut class="bu-pr-4 bu-is-flex" :test-id="\'metric-card-\' + testId + \'-column\'" v-if="isPercentage" :color="color" :percentage="number"></cly-progress-donut>\
                             <div class="bu-is-flex bu-is-flex-direction-column bu-is-justify-content-space-between has-ellipsis">\
                                 <div class="bu-is-flex bu-is-align-items-center">\
-                                    <span class="text-medium has-ellipsis" v-tooltip="label"><slot>{{label}}</slot></span>\
-                                    <cly-tooltip-icon v-if="tooltip.length > 0" class="bu-is-flex-grow-1 bu-ml-1" :tooltip="tooltip"></cly-tooltip-icon>\
+                                    <span :data-test-id="\'metric-card-\' + testId + \'-column-label\'" class="text-medium has-ellipsis" v-tooltip="label"><slot>{{label}}</slot></span>\
+                                    <cly-tooltip-icon :data-test-id="\'metric-card-\' + testId + \'-column-tooltip\'" v-if="tooltip.length > 0" class="bu-is-flex-grow-1 bu-ml-1" :tooltip="tooltip"></cly-tooltip-icon>\
                                 </div>\
                                 <div :class=numberClasses>\
-                                    <h2><slot name="number">{{formattedNumber}}</slot></h2>\
-                                    <div class="bu-pl-2 bu-is-flex-grow-1"><slot name="description"><span class="text-medium">{{description}}</span></slot></div>\
+                                    <h2 :data-test-id="\'metric-card-\' + testId + \'-column-number\'" v-if="isEstimate" v-tooltip="estimateTooltip" class="is-estimate">~<slot name="number">{{formattedNumber}}</slot></h2>\
+                                    <h2 :data-test-id="\'metric-card-\' + testId + \'-column-number\'" v-else><slot name="number">{{formattedNumber}}</slot></h2>\
+                                    <div class="bu-pl-2 bu-is-flex-grow-1" :data-test-id="\'metric-card-\' + testId + \'-description\'"><slot name="description"><span :data-test-id="\'metric-card-\' + testId + \'-column-description\'" class="text-medium">{{description}}</span></slot></div>\
                                 </div>\
                             </div>\
                         </div>\
@@ -433,7 +474,28 @@
     }));
 
     Vue.component("cly-app-select", {
-        template: '<cly-select-x :options="options" :auto-commit="mode !== \'multi-check\'" :mode="mode" :max-items="multipleLimit" v-bind="$attrs" v-on="$listeners"></cly-select-x>',
+        template: `
+        <cly-select-x
+            :options="options"
+            :auto-commit="mode !== \'multi-check\'"
+            :mode="mode"
+            :max-items="multipleLimit"
+            v-bind="$attrs"
+            v-on="$listeners">
+            <template
+                v-slot:option-prefix="option">
+                <div v-if="showAppImage && dropdownApps[option.value] && dropdownApps[option.value].image" class="cly-vue-dropdown__dropdown-icon bu-mt-1 bu-mr-1"
+                    :style="{backgroundImage: \'url(\' + dropdownApps[option.value].image + \')\'}">
+                </div>
+            </template>
+            <template
+                v-if="showAppImage && selectedApps && dropdownApps[selectedApps]"
+                v-slot:label-prefix>
+                <div class="cly-vue-dropdown__dropdown-icon bu-ml-1 bu-mr-1"
+                    :style="{backgroundImage: \'url(\' + dropdownApps[selectedApps].image + \')\'}">
+                </div>
+            </template>
+        </cly-select-x>`,
         props: {
             allowAll: {
                 type: Boolean,
@@ -456,6 +518,11 @@
                     return {};
                 },
                 required: false
+            },
+            showAppImage: {
+                type: Boolean,
+                default: false,
+                required: false
             }
         },
         computed: {
@@ -467,6 +534,9 @@
             },
             mode: function() {
                 return this.multiple ? "multi-check" : "single-list";
+            },
+            selectedApps: function() {
+                return this.$attrs.value;
             },
             apps: function() {
                 var apps = countlyGlobal.apps || {};
@@ -490,21 +560,28 @@
 
                 return Object.keys(apps).map(function(key) {
                     return {
-                        label: apps[key].name,
+                        label: countlyCommon.unescapeHtml(apps[key].name),
                         value: apps[key]._id
                     };
                 });
             }
+        },
+        data: function() {
+            return {
+                dropdownApps: countlyGlobal.apps || {}
+            };
         }
     });
 
     Vue.component("cly-event-select", countlyBaseComponent.extend({
         mixins: [countlyVue.mixins.i18n],
         template: '<cly-select-x\
+                    :test-id="testId"\
                     pop-class="cly-event-select"\
                     all-placeholder="All Events"\
                     search-placeholder="Search in Events"\
                     placeholder="Select Event"\
+                    :disabled="disabled"\
                     :hide-default-tabs="true"\
                     :options="availableEvents"\
                     :hide-all-options-tab="true"\
@@ -520,7 +597,7 @@
                             :value="selectScope.activeTabId"\
                             @input="selectScope.updateTab"\
                             size="small">\
-                            <el-radio-button v-for="tab in selectScope.tabs" :key="tab.name" :label="tab.name">{{tab.label}}</el-radio-button>\
+                            <el-radio-button :test-id="testId + \'-tab-\' + idx" v-for="(tab,idx) in selectScope.tabs" :key="tab.name" :label="tab.name">{{tab.label}}</el-radio-button>\
                         </el-radio-group>\
                     </template>\
                 </cly-select-x>',
@@ -531,11 +608,13 @@
                     return [];
                 }
             },
-            width: { type: [Number, Object], default: 400},
+            width: { type: [Number, Object, String], default: 'fit-content'},
             adaptiveLength: {type: Boolean, default: true},
             arrow: {type: Boolean, default: false},
             title: { type: String, require: false},
-            selectedApp: {type: String, required: false, default: ''}
+            selectedApp: {type: String, required: false, default: ''},
+            disabled: {type: Boolean, default: false},
+            testId: {type: String, default: "event-select-test-id"}
         },
         data: function() {
             return {
@@ -561,43 +640,83 @@
                         "label": this.i18n('sidebar.events'),
                         "name": "event",
                         "options": []
-                    },
-                    {
+                    }
+                ];
+                if (countlyGlobal.plugins.indexOf('views') !== -1) {
+                    availableEvents.push({
                         "label": this.i18n('internal-events.[CLY]_view'),
                         "name": "[CLY]_view",
                         "options": [ { label: this.i18n('internal-events.[CLY]_view'), value: '[CLY]_view' } ]
-                    },
-                    {
+                    });
+                }
+
+                var feedbackOptions = [];
+                if (countlyGlobal.plugins.indexOf('star-rating') !== -1) {
+                    feedbackOptions.push({ label: this.i18n('internal-events.[CLY]_star_rating'), value: '[CLY]_star_rating' });
+                }
+
+                if (countlyGlobal.plugins.indexOf('surveys') !== -1) {
+                    feedbackOptions.push({ label: this.i18n('internal-events.[CLY]_nps'), value: '[CLY]_nps' });
+                    feedbackOptions.push({ label: this.i18n('internal-events.[CLY]_survey'), value: '[CLY]_survey' });
+                }
+                if (feedbackOptions.length > 0) {
+                    availableEvents.push({
                         "label": this.i18n("sidebar.feedback"),
                         "name": "feedback",
-                        "options": [
-                            { label: this.i18n('internal-events.[CLY]_star_rating'), value: '[CLY]_star_rating' },
-                            { label: this.i18n('internal-events.[CLY]_nps'), value: '[CLY]_nps' },
-                            { label: this.i18n('internal-events.[CLY]_survey'), value: '[CLY]_survey' }
-                        ]
-                    },
-                    {
+                        "options": feedbackOptions
+                    });
+                }
+
+
+                if (countlyGlobal.plugins.indexOf('compliance-hub') !== -1) {
+                    availableEvents.push({
+                        "label": this.i18n('internal-events.[CLY]_consent'),
+                        "name": "[CLY]_consent",
+                        "options": [ { label: this.i18n('internal-events.[CLY]_consent'), value: '[CLY]_consent' } ]
+                    });
+                }
+
+                if (countlyGlobal.plugins.indexOf('crashes') !== -1) {
+                    availableEvents.push({
                         "label": this.i18n('internal-events.[CLY]_crash'),
                         "name": "[CLY]_crash",
                         "options": [ { label: this.i18n('internal-events.[CLY]_crash'), value: '[CLY]_crash' } ]
-                    }
-                    // {
-                    //     "label": this.i18n('internal-events.[CLY]_push_action'),
-                    //     "name": "[CLY]_push_action",
-                    //     "noChild": true
-                    // }
-                ];
+                    });
+                }
+
+                if (countlyGlobal.plugins.indexOf('push') !== -1) {
+                    /*availableEvents.push({
+                        "label": 'Push Sent',
+                        "name": "[CLY]_push_sent",
+                        "options": [
+                            { label: this.i18n('internal-events.[CLY]_push_sent'), value: '[CLY]_push_sent' }
+                        ]
+                    });*/
+                    availableEvents.push({
+                        "label": 'Push Actioned',
+                        "name": "[CLY]_push_action",
+                        "options": [
+                            { label: this.i18n('internal-events.[CLY]_push_action'), value: '[CLY]_push_action' }
+                        ]
+                    });
+                }
+
+                // {
+                //     "label": this.i18n('internal-events.[CLY]_push_action'),
+                //     "name": "[CLY]_push_action",
+                //     "noChild": true
+                // }
 
                 if (this.selectedApp) {
                     countlyEvent.getEventsForApps([this.selectedApp], function(eData) {
                         availableEvents[1].options = eData.map(function(e) {
-                            return {label: e.name, value: e.value};
+                            return {label: countlyCommon.unescapeHtml(e.name), value: e.value};
                         });
                     });
                 }
                 else {
                     availableEvents[1].options = countlyEvent.getEvents().map(function(event) {
-                        return {label: event.name, value: event.key};
+                        return {label: countlyCommon.unescapeHtml(event.name), value: event.key};
                     });
                 }
 
@@ -856,17 +975,18 @@
     }));
     Vue.component("cly-notification", countlyBaseComponent.extend({
         template: '<div v-if="isModalVisible===true" :class="dynamicClasses" class="cly-vue-notification__alert-box">\n' +
-                        '<div class="bu-is-flex bu-is-justify-content-space-between">\n' +
+                        '<div class="bu-is-flex bu-is-justify-content-space-between bu-p-3">\n' +
                             '<div class="bu-is-flex">\n' +
-                                '<img :src="image" class="alert-image bu-mr-4 bu-my-2 bu-ml-2">\n' +
-                                '<slot><span class="alert-text" style="margin-block:auto" v-html="innerText">{{text}}</span></slot>\n' +
+                                '<img data-test-id="cly-notification-img" :src="image" class="alert-image bu-mr-3">\n' +
+                                '<slot><span class="alert-text" data-test-id="cly-notification-text" style="margin-block:auto" v-html="innerText">{{text}}</span></slot>\n' +
                             '</div>\n' +
-                            '<div v-if="closable"  class="bu-mt-2" >\n' +
-                                '<div v-if="size==\'full\'" @click="closeModal" class="bu-mr-2 bu-ml-2" >\n' +
-                                    '<slot name="close"><i class="el-icon-close"></i></slot>\n' +
+                            '<div v-if="goTo.title" class="bu-is-flex bu-ml-auto"><a class="bu-level-item bu-has-text-link bu-has-text-weight-medium" @click="goToUrl">{{goTo.title}}</a></div>' +
+                            '<div v-if="closable"  class="" >\n' +
+                                '<div v-if="size==\'full\'" @click="closeModal" class=" bu-ml-2" >\n' +
+                                    '<slot name="close"><i data-test-id="cly-notification-full-size-close-icon" class="el-icon-close"></i></slot>\n' +
                                 '</div>\n' +
-                                '<div v-else @click="closeModal" class="bu-mr-2 bu-ml-6">\n' +
-                                    '<slot name="close"><i class="el-icon-close"></i></slot>\n' +
+                                '<div v-else @click="closeModal" class="bu-ml-3 bu-pl-3 bu-ml-3" style="cursor:pointer;">\n' +
+                                    '<slot name="close"><i data-test-id="cly-notification-modal-close-icon" class="el-icon-close"></i></slot>\n' +
                                 '</div>\n' +
                             '</div>\n' +
                             '<div v-else class="bu-ml-5">\n' +
@@ -881,7 +1001,14 @@
             size: {default: "full", type: String},
             visible: {default: true, type: Boolean},
             closable: {default: true, type: Boolean},
-            autoHide: {default: false, type: Boolean},
+            autoHide: { default: false, type: Boolean },
+            goTo: {
+                default() {
+                    return { title: '', url: '', from: '' };
+                },
+                type: Object
+            },
+            customWidth: { default: "", type: String },
         },
         data: function() {
             return {
@@ -903,7 +1030,11 @@
         },
         computed: {
             dynamicClasses: function() {
-                return ["cly-vue-notification__alert-box__alert-text--" + this.color, "cly-vue-notification__alert-box--" + this.size];
+                var classes = ["cly-vue-notification__alert-box__alert-text--" + this.color, "cly-vue-notification__alert-box--" + this.size];
+                if (this.customWidth !== "") {
+                    classes.push(`notification-toasts__item--${this.customWidth}`);
+                }
+                return classes;
             },
             image: function() {
                 if (this.color === "dark-informational" || this.color === "light-informational") {
@@ -931,6 +1062,9 @@
                 this.isModalVisible = false;
                 this.$emit('close', this.id);
             },
+            goToUrl: function() {
+                CountlyHelpers.goTo(this.goTo);
+            }
         },
         mounted: function() {
             if (this.autoHide) {
@@ -946,21 +1080,24 @@
     }));
 
     Vue.component("cly-empty-view", countlyBaseComponent.extend({
-        template: ' <div class="bu-mt-5 bu-pt-4 bu-is-flex bu-is-flex-direction-column bu-is-align-items-center cly-vue-empty-view">\
+        template: '<div :class="classes">\
                         <slot name="icon">\
-                            <div class="bu-mt-6">\
-                                <img class="cly-vue-empty-view__img" src="images/icons/empty-plugin.svg"/>\
+                            <div v-if="visual!==\'framed\'" class="bu-mt-6">\
+                                <img :data-test-id="testId + \'-empty-view-icon\'" class="cly-vue-empty-view__img" src="images/icons/empty-plugin.svg"/>\
                             </div>\
                         </slot>\
-                        <div class="bu-mt-2 bu-is-flex bu-is-flex-direction-column 	bu-is-align-items-center">\
+                        <div class="bu-mt-2 bu-is-flex bu-is-flex-direction-column">\
                             <slot name="title">\
-                                <h3 class="color-cool-gray-100 bu-mt-4">{{title}}</h3>\
+								<h3 v-if="visual==\'framed\'" :data-test-id="testId + \'-empty-view-title\'" class="bu-ml-5 color-cool-gray-100 bu-mt-4">{{title}}</h3>\
+                                <h3 v-else :data-test-id="testId + \'-empty-view-title\'" class="bu-has-text-centered color-cool-gray-100 bu-mt-4">{{title}}</h3>\
                             </slot>\
                             <slot name="subTitle">\
-                                <div class="bu-mt-4 bu-mb-5 text-medium color-cool-gray-50 bu-has-text-centered cly-vue-empty-view__subtitle"><span v-html="subTitle"></span></div>\
+								<div v-if="visual==\'framed\'" class="bu-mt-3 bu-mb-5 bu-ml-5 text-medium color-cool-gray-50 cly-vue-empty-view__subtitle"><span :data-test-id="testId + \'-empty-view-subtitle\'" v-html="subTitle"></span></div>\
+                                <div v-else class="bu-mt-4 bu-mb-5 text-medium color-cool-gray-50 bu-has-text-centered cly-vue-empty-view__subtitle"><span :data-test-id="testId + \'-empty-view-subtitle\'" v-html="subTitle"></span></div>\
                             </slot>\
                             <slot name="action" v-if="hasCreateRight && hasAction">\
-                                <div @click="actionFunc" class="bu-is-clickable button bu-has-text-centered color-blue-100 pointer">{{actionTitle}}</div>\
+								<div v-if="visual==\'framed\'" style=\'width: 200px\' class="bu-ml-5 bu-pb-4"><el-button   :data-test-id="testId + \'-empty-view-action-button\'" @click="actionFunc"><i class=\'cly-countly-icon-outline cly-countly-icon-outline-plus-circle-16px bu-pr-4 bu-mr-1\'></i> {{actionTitle}}\</el-button></div>\
+                                <div v-else :data-test-id="testId + \'-empty-view-action-button\'" @click="actionFunc" class="bu-is-clickable button bu-has-text-centered color-blue-100 pointer">{{actionTitle}}</div>\
                             </slot>\
                         </div>\
                     </div>',
@@ -973,10 +1110,21 @@
             actionTitle: { default: "Create", type: String },
             actionFunc: { default: null, type: Function },
             hasAction: {default: false, type: Boolean},
-            hasCreateRight: { default: true, type: Boolean }
+            hasCreateRight: { default: true, type: Boolean },
+            testId: {type: String, default: "cly-empty-view"},
+            visual: {type: String, default: "old"}
         },
         data: function() {
-            return {};
+            var settings = {
+                classes: 'bu-mt-5 bu-pt-4 bu-is-flex bu-is-flex-direction-column bu-is-align-items-center cly-vue-empty-view',
+                align: 'center',
+            };
+            if (this.visual === "framed") {
+                settings.classes = 'bu-pb-5 bu-pt-4 bu-pl-3 bu-is-flex bu-is-flex-direction-column bu-is-align-items-left cly-vue-empty-view cly-vue-empty-view-framed';
+                settings.align = 'left';
+            }
+
+            return settings;
         },
         methods: {
         }
@@ -995,7 +1143,8 @@
                         'bu-py-6': true
                     };
                 }
-            }
+            },
+            testId: {type: String, default: "cly-empty-view"}
         },
         data: function() {
             return {};
@@ -1010,15 +1159,15 @@
         template: ' <div :style="topStyle" :class="[\'bu-is-flex bu-is-flex-direction-column bu-is-align-items-center bu-is-justify-content-center\', classes]" style="height: 100%;opacity: 0.6">\
                         <slot name="icon">\
                             <div>\
-                                <img :src="image"/>\
+                                <img :data-test-id="testId + \'-empty-logo\'" :src="image"/>\
                             </div>\
                         </slot>\
                         <div class="bu-mt-2">\
                             <slot name="title">\
-                                <h4 class="color-cool-gray-100 bu-has-text-centered">{{title}}</h4>\
+                                <h4 :data-test-id="testId + \'-empty-title\'" class="color-cool-gray-100 bu-has-text-centered">{{title}}</h4>\
                             </slot>\
                             <slot name="subTitle">\
-                                <div class="bu-mt-1 text-small color-cool-gray-50 bu-has-text-centered">{{subTitle}}</div>\
+                                <div :data-test-id="testId + \'-empty-subtitle\'" class="bu-mt-1 text-small color-cool-gray-50 bu-has-text-centered">{{subTitle}}</div>\
                             </slot>\
                         </div>\
                     </div>',
@@ -1053,7 +1202,6 @@
                     </div>"
     }));
 
-
     Vue.component("cly-multiplex", {
         props: {
             children: {
@@ -1070,4 +1218,57 @@
                         </component>\
                     </div>'
     });
+
+    Vue.component("cly-auto-refresh-toggle", countlyBaseComponent.extend({
+        template: "<div class='cly-vue-auto-refresh-toggle'>\
+                        <div v-if='autoRefresh' class='bu-level-item'>\
+                            <span class='cly-vue-auto-refresh-toggle__refresh--enabled' :data-test-id='testId + \"-auto-refresh-toggle-is-label\"'>{{i18n('auto-refresh.is')}}</span>\
+                            <span class='cly-vue-auto-refresh-toggle__refresh--enabled-color' :data-test-id='testId + \"-auto-refresh-toggle-enabled-label\"'>{{i18n('auto-refresh.enabled')}}</span>\
+                            <span v-tooltip.top-left='getRefreshTooltip()' class='bu-ml-1 bu-mr-2 cly-vue-auto-refresh-toggle__tooltip ion-help-circled' :data-test-id='testId + \"-auto-refresh-toggle-tooltip\"'></span>\
+                            <el-button @click='stopAutoRefresh()'><i class='bu-ml-2 fa fa-stop-circle' :data-test-id='testId + \"-auto-refresh-toggle-button\"'></i> {{i18n('auto-refresh.stop')}}\
+                            </el-button>\
+                        </div>\
+                        <div v-else-if='!autoRefresh' class='bu-level-item'>\
+                            <el-switch v-model='autoRefresh' :test-id='testId + \"-auto-refresh-toggle\"'>\
+                            </el-switch>\
+                            <span class='cly-vue-auto-refresh-toggle__refresh--disabled' :data-test-id='testId + \"-auto-refresh-toggle-disabled-label\"'>{{i18n('auto-refresh.enable')}}</span>\
+                            <span v-tooltip.left='getRefreshTooltip()' class='bu-ml-2 cly-vue-auto-refresh-toggle__tooltip ion-help-circled' :data-test-id='testId + \"-auto-refresh-toggle-disabled-tooltip\"'></span>\
+                        </div>\
+                    </div>",
+        mixins: [countlyVue.mixins.i18n],
+        data: function() {
+            return {
+                autoRefresh: false
+            };
+        },
+        props: {
+            feature: { required: true, type: String },
+            defaultValue: { required: false, default: false, type: Boolean},
+            testId: { required: false, default: 'cly-test-id', type: String}
+        },
+        methods: {
+            getRefreshTooltip: function() {
+                return this.i18n('auto-refresh.help');
+            },
+            stopAutoRefresh: function() {
+                this.autoRefresh = false;
+            }
+        },
+        watch: {
+            autoRefresh: function(newValue) {
+                localStorage.setItem("auto_refresh_" + this.feature + "_" + countlyCommon.ACTIVE_APP_ID, newValue);
+            },
+        },
+        mounted: function() {
+            var autoRefreshState = localStorage.getItem("auto_refresh_" + this.feature + "_" + countlyCommon.ACTIVE_APP_ID);
+            if (autoRefreshState) {
+                this.autoRefresh = autoRefreshState === "true";
+            }
+            else {
+                localStorage.setItem("auto_refresh_" + this.feature + "_" + countlyCommon.ACTIVE_APP_ID, this.defaultValue);
+                this.autoRefresh = this.defaultValue;
+            }
+        }
+    }));
+
 }(window.countlyVue = window.countlyVue || {}));

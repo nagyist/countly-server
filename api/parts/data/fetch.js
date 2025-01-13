@@ -850,7 +850,11 @@ fetch.fetchCountries = function(params) {
 fetch.fetchSessions = function(params) {
     fetchTimeObj('users', params, false, function(usersDoc) {
         countlySession.setDb(usersDoc || {});
-        common.returnOutput(params, countlySession.getSubperiodData());
+        var options = {};
+        if (params.qstring.bucket) {
+            options.bucket = params.qstring.bucket;
+        }
+        common.returnOutput(params, countlySession.getSubperiodData(options));
     });
 };
 
@@ -1244,12 +1248,16 @@ fetch.fetchEvents = function(params) {
     if (params.qstring.event && params.qstring.event.length) {
         let collectionName = "events" + crypto.createHash('sha1').update(params.qstring.event + params.app_id).digest('hex');
         fetch.getTimeObjForEvents(collectionName, params, function(doc) {
+            var options = {};
+            if (params.qstring.bucket) {
+                options.bucket = params.qstring.bucket;
+            }
             countlyEvents.setDb(doc || {});
             if (params.qstring.segmentation && params.qstring.segmentation !== "no-segment") {
                 common.returnOutput(params, countlyEvents.getSegmentedData(params.qstring.segmentation));
             }
             else {
-                common.returnOutput(params, countlyEvents.getSubperiodData());
+                common.returnOutput(params, countlyEvents.getSubperiodData(options));
             }
         });
     }
@@ -1581,7 +1589,7 @@ function fetchTimeObj(collection, params, isCustomEvent, options, callback) {
         options = {};
     }
 
-    if (typeof options === "undefined") {
+    if (!options) {
         options = {};
     }
 
@@ -1613,7 +1621,12 @@ function fetchTimeObj(collection, params, isCustomEvent, options, callback) {
         options.levels.monthly = [];
     }
 
-    if (params.qstring.action === "refresh") {
+    if (params.qstring.fullRange) {
+        options.db.collection(collection).find({ '_id': { $regex: "^" + options.id + ".*" } }).toArray(function(err1, data) {
+            callback(getMergedObj(data, true, options.levels, params.truncateEventValuesList));
+        });
+    }
+    else if (params.qstring.action === "refresh") {
         var dbDateIds = common.getDateIds(params),
             fetchFromZero = {},
             fetchFromMonth = {};
@@ -1666,7 +1679,7 @@ function fetchTimeObj(collection, params, isCustomEvent, options, callback) {
 
         var zeroDocs = [zeroIdToFetch];
         var monthDocs = [monthIdToFetch];
-        if (!(options && options.dontBreak)) {
+        if (!options.dontBreak) {
             for (let i = 0; i < common.base64.length; i++) {
                 zeroDocs.push(zeroIdToFetch + "_" + common.base64[i]);
                 monthDocs.push(monthIdToFetch + "_" + common.base64[i]);
@@ -2007,7 +2020,25 @@ fetch.alljobs = async function(metric, params) {
     total = total.length > 0 ? total[0].total : 0;
     const pipeline = [
         {
+            $addFields: {
+                sortKey: {
+                    $cond: {
+                        if: { $eq: ["$status", 0] },
+                        then: 0,
+                        else: {
+                            $cond: {
+                                if: { $eq: ["$status", 7] },
+                                then: 1,
+                                else: 2
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        {
             $sort: {
+                sortKey: 1,
                 finished: -1
             }
         },
@@ -2019,7 +2050,8 @@ fetch.alljobs = async function(metric, params) {
                 schedule: { $first: "$schedule" },
                 next: { $first: "$next" },
                 finished: { $first: "$finished" },
-                total: { $sum: 1 }
+                total: { $sum: 1 },
+                rowId: { $first: "$_id" }
             }
         }
     ];
@@ -2071,6 +2103,7 @@ fetch.jobDetails = async function(metric, params) {
     cursor.close();
     common.returnOutput(params, { sEcho: params.qstring.sEcho, iTotalRecords: total, iTotalDisplayRecords: total, aaData: items || [] });
 };
+
 
 /**
  * Fetch data for tops

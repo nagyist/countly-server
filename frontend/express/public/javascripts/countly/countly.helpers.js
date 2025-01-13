@@ -11,9 +11,44 @@
  */
 (function(CountlyHelpers) {
 
+    /**
+    * This function checks if a Countly plugin is enabled.
+    * @param {string|array} name - The name of the plugin(s) to check for. Can be either a string or an array of strings.
+    * @returns {boolean} - Returns true when atleast one plugin is enabled, false otherwise.
+    */
+    CountlyHelpers.isPluginEnabled = function(name) {
+        if (countlyGlobal && countlyGlobal.pluginsFull && Array.isArray(countlyGlobal.pluginsFull)) {
+            if (!Array.isArray(name)) {
+                name = [name];
+            }
+            var isPluginsFull = false;
+            for (var i = 0; i < name.length; i++) {
+                if (countlyGlobal.pluginsFull.indexOf(name[i]) > -1) {
+                    isPluginsFull = true;
+                    break;
+                }
+            }
+            if (isPluginsFull && countlyGlobal.plugins && Array.isArray(countlyGlobal.plugins)) {
+                for (var j = 0; j < name.length; j++) {
+                    if (countlyGlobal.plugins.indexOf(name[j]) > -1) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            else {
+                return true;
+            }
+        }
+        else {
+            return true;
+        }
+
+    };
+
     CountlyHelpers.logout = function(path) {
         if (path) {
-            window.location = "/logout";
+            window.location = "logout";
         }
         else {
             window.location.reload();//this will log us out
@@ -290,15 +325,22 @@
     * @deprecated 
     * @param {function=} msg.onClick - on click listener
     * @deprecated 
+    * @param {boolean=} msg.persistent - flag to determine if notification should be displayed persistently or as a toast
     * @example
     * CountlyHelpers.notify({
     *    message: "Main message text",
     * });
     */
     CountlyHelpers.notify = function(msg) {
+        if (typeof msg === "string") {
+            msg = {message: msg};
+        }
         var payload = {};
-        payload.text = msg.message;
+        var persistent = msg.persistent;
+        payload.text = countlyCommon.encodeHtml(msg.message);
         payload.autoHide = !msg.sticky;
+        payload.id = msg.id;
+        payload.width = msg.width;
         var colorToUse;
 
         if (countlyGlobal.ssr) {
@@ -327,7 +369,21 @@
             break;
         }
         payload.color = colorToUse;
-        countlyCommon.dispatchNotificationToast(payload);
+
+        if (persistent) {
+            countlyCommon.dispatchPersistentNotification(payload);
+        }
+        else {
+            countlyCommon.dispatchNotificationToast(payload);
+        }
+    };
+
+    /**
+     * Removes a notification from persistent notification list based on id.
+     * @param {string} notificationId notification id
+     */
+    CountlyHelpers.removePersistentNotification = function(notificationId) {
+        countlyCommon.removePersistentNotification(notificationId);
     };
 
     /**
@@ -657,6 +713,7 @@
     * @param {object} moreData - more data to display
     * @param {string} moreData.image - image id
     * @param {string} moreData.title - alert title
+    * @param {string} testId - test id for ui tests
     * @example
     * CountlyHelpers.confirm("Are you sure?", "red", function (result) {
     *    if (!result) {
@@ -666,7 +723,7 @@
     *    //user confirmed, do what you need to do
     * });
     */
-    CountlyHelpers.confirm = function(msg, type, callback, buttonText, moreData) {
+    CountlyHelpers.confirm = function(msg, type, callback, buttonText, moreData, testId = 'cly-confirm-test-id') {
         if (countlyGlobal.ssr) {
             return;
         }
@@ -675,7 +732,9 @@
 
             var cancelLabel = countlyVue.i18n('common.cancel'),
                 confirmLabel = countlyVue.i18n('common.continue'),
-                convertedType = "danger"; // Default type is "danger"
+                convertedType = "danger", // Default type is "danger"
+                showClose = moreData && moreData.showClose !== false,
+                alignCenter = moreData && moreData.alignCenter !== false;
 
             if (buttonText && buttonText.length === 2) {
                 cancelLabel = buttonText[0];
@@ -698,7 +757,10 @@
                 cancelLabel: cancelLabel,
                 title: moreData && moreData.title,
                 image: moreData && moreData.image,
-                callback: callback
+                showClose: showClose,
+                alignCenter: alignCenter,
+                callback: callback,
+                testId: testId
             };
 
             var currentStore = window.countlyVue.vuex.getGlobalStore();
@@ -724,6 +786,59 @@
         dialog.addClass('cly-loading');
         revealDialog(dialog);
         return dialog;
+    };
+
+    /**
+    * Display modal popup that blocks the screen and cannot be closed
+    * @param {string} msg - message to display in popup
+    * @param {object} moreData - more data to display
+    * @param {string} moreData.title - alert title
+    * @example
+    * CountlyHelpers.showBlockerDialog("Some message");
+    */
+    CountlyHelpers.showBlockerDialog = function(msg, moreData) {
+        if (countlyGlobal.ssr) {
+            return;
+        }
+
+        if (window.countlyVue && window.countlyVue.vuex) {
+            var payload = {
+                intent: "blocker",
+                message: msg,
+                title: (moreData && moreData.title) || "",
+                width: (moreData && moreData.width) || "400px",
+            };
+
+            var currentStore = window.countlyVue.vuex.getGlobalStore();
+            if (currentStore) {
+                currentStore.dispatch('countlyCommon/onAddDialog', payload);
+            }
+        }
+    };
+
+    /**
+    * Display modal popup that shows quickstart guide
+    * @param {string} content - modal popup content
+    * @example
+    * CountlyHelpers.showQuickstartDialog();
+    */
+    CountlyHelpers.showQuickstartPopover = function(content) {
+        if (countlyGlobal.ssr) {
+            return;
+        }
+
+        if (window.countlyVue && window.countlyVue.vuex) {
+            var payload = {
+                intent: "quickstart",
+                message: content,
+                width: "314",
+            };
+
+            var currentStore = window.countlyVue.vuex.getGlobalStore();
+            if (currentStore) {
+                currentStore.dispatch('countlyCommon/onAddDialog', payload);
+            }
+        }
     };
 
     /**
@@ -3354,6 +3469,43 @@
             $(".select-items").hide();
         });
     };
+    /**
+     * Shuffle string using crypto.getRandomValues
+     * @param {string} text - text to be shuffled
+     * @returns {string} shuffled password
+     */
+    CountlyHelpers.shuffleString = function(text) {
+        var j, x, i;
+        for (i = text.length; i; i--) {
+            j = Math.floor(Math.random() * i);
+            x = text[i - 1];
+            text[i - 1] = text[j];
+            text[j] = x;
+        }
+
+        return text.join("");
+
+    };
+    /**
+     * Gets a random string from given character set string with given length
+     * @param {string} charSet - charSet string
+     * @param {number} length - length of the random string. default 1 
+     * @returns {string} random string from charset
+     */
+    CountlyHelpers.getRandomValue = function(charSet, length = 1) {
+        const randomValues = crypto.getRandomValues(new Uint8Array(charSet.length));
+        let randomValue = "";
+
+        if (length > charSet.length) {
+            length = charSet.length;
+        }
+
+        for (let i = 0; i < length; i++) {
+            randomValue += charSet[randomValues[i] % charSet.length];
+        }
+
+        return randomValue;
+    };
 
     /**
     * Generate random password
@@ -3376,30 +3528,20 @@
         }
 
         //1 char
-        text.push(upchars.charAt(Math.floor(Math.random() * upchars.length)));
+        text.push(this.getRandomValue(upchars));
         //1 number
-        text.push(numbers.charAt(Math.floor(Math.random() * numbers.length)));
+        text.push(this.getRandomValue(numbers));
         //1 special char
         if (!no_special) {
-            text.push(specials.charAt(Math.floor(Math.random() * specials.length)));
+            text.push(this.getRandomValue(specials));
             length--;
         }
 
-        var j, x, i;
         //5 any chars
-        for (i = 0; i < Math.max(length - 2, 5); i++) {
-            text.push(all.charAt(Math.floor(Math.random() * all.length)));
-        }
+        text.push(this.getRandomValue(all, Math.max(length - 2, 5)));
 
         //randomize order
-        for (i = text.length; i; i--) {
-            j = Math.floor(Math.random() * i);
-            x = text[i - 1];
-            text[i - 1] = text[j];
-            text[j] = x;
-        }
-
-        return text.join("");
+        return this.shuffleString(text);
     };
 
     /**
@@ -3748,36 +3890,6 @@
         return temp.toLowerCase();
     };
 
-    /**
-     * Function that increments strings alphabetically.
-     * @param {string} str - string that next character will be calculated
-     * @return {string} - calculated string
-     */
-    CountlyHelpers.stringIncrement = function(str) {
-        let carry = 1;
-        let res = '';
-
-        for (let i = str.length - 1; i >= 0; i--) {
-            let char = str.toUpperCase().charCodeAt(i);
-            char += carry;
-            if (char > 90) {
-                char = 65;
-                carry = 1;
-            }
-            else {
-                carry = 0;
-            }
-            res = String.fromCharCode(char) + res;
-            if (!carry) {
-                res = str.substring(0, i) + res;
-                break;
-            }
-        }
-        if (carry) {
-            res = 'A' + res;
-        }
-        return res;
-    };
 
     $(document).ready(function() {
         $("#overlay").click(function() {

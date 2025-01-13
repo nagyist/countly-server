@@ -9,7 +9,7 @@ var usersApi = {},
     mail = require('./mail.js'),
     countlyConfig = require('./../../../frontend/express/config.js'),
     plugins = require('../../../plugins/pluginManager.js'),
-    { hasAdminAccess, getUserApps, getAdminApps } = require('./../../utils/rights.js');
+    { hasAdminAccess, getUserApps, getAdminApps, hasReadRight } = require('./../../utils/rights.js');
 
 const countlyCommon = require('../../lib/countly.common.js');
 const log = require('../../utils/log.js')('core:mgmt.users');
@@ -36,13 +36,14 @@ usersApi.getCurrentUser = function(params) {
 * @returns {boolean} true if fetched data from db
 **/
 usersApi.getUserById = function(params) {
-    if (!params.qstring.id || params.qstring.id.length !== 24) {
-        common.returnMessage(params, 401, 'Missing or incorrect user id parameter');
+    if (!params.qstring.id) {
+        common.returnMessage(params, 401, 'Missing user id parameter');
         return false;
     }
     common.db.collection('members').findOne({ _id: common.db.ObjectID(params.qstring.id) }, {
         password: 0,
-        appSortList: 0
+        appSortList: 0,
+        api_key: 0
     }, function(err, member) {
 
         if (!member || err) {
@@ -72,7 +73,8 @@ usersApi.getUserById = function(params) {
 usersApi.getAllUsers = function(params) {
     common.db.collection('members').find({}, {
         password: 0,
-        appSortList: 0
+        appSortList: 0,
+        api_key: 0,
     }).toArray(function(err, members) {
 
         if (!members || err) {
@@ -143,7 +145,7 @@ usersApi.resetTimeBan = function(params) {
 * @param {params} params - params object
 * @returns {boolean} true if user created
 **/
-usersApi.createUser = function(params) {
+usersApi.createUser = async function(params) {
     var argProps = {
             'full_name': {
                 'required': true,
@@ -188,6 +190,7 @@ usersApi.createUser = function(params) {
         },
         newMember = {};
 
+    await depCheck(params);
     var createUserValidation = common.validateArgs(params.qstring.args, argProps, true);
     if (!(newMember = createUserValidation.obj)) {
         common.returnMessage(params, 400, createUserValidation.errors);
@@ -196,6 +199,14 @@ usersApi.createUser = function(params) {
 
     //adding backwards compatability
     newMember.permission = newMember.permission || {};
+
+    if (!newMember.permission._) {
+        newMember.permission._ = {
+            a: newMember.admin_of || [],
+            u: newMember.user_of ? [newMember.user_of] : []
+        };
+    }
+
     if (newMember.admin_of) {
         if (Array.isArray(newMember.admin_of) && newMember.admin_of.length) {
             newMember.permission.c = newMember.permission.c || {};
@@ -250,7 +261,7 @@ usersApi.createUser = function(params) {
         }
         newMember.locked = false;
         newMember.username = newMember.username.trim();
-        newMember.email = newMember.email.trim();
+        newMember.email = newMember.email.trim().toString().toLowerCase();
         crypto.randomBytes(48, function(errorBuff, buffer) {
             newMember.api_key = common.md5Hash(buffer.toString('hex') + Math.random());
             common.db.collection('members').insert(newMember, function(err, member) {
@@ -350,6 +361,53 @@ usersApi.updateHomeSettings = function(params) {
         });
     }
 };
+
+
+/**
+ * Checks the permission dependencies of features for each app based on the enabled features, enabling the required permission dependencies if necessary.
+ * @param {object} params - params object.
+*/
+async function depCheck(params) {
+    var features = ["core", "events" /* , "global_configurations", "global_applications", "global_users", "global_jobs", "global_upload" */];
+    var featuresPermissionDependency = {};
+    plugins.dispatch("/permissions/features", { params: params, features: features, featuresPermissionDependency: featuresPermissionDependency }, function() {
+        //read permission check, making sure that read is present in every dependency array if any other permission is given
+        for (var feature in featuresPermissionDependency) {
+            var perms = Object.keys(featuresPermissionDependency[feature]);
+            for (var perm of perms) {
+                var permFeatures = Object.keys(featuresPermissionDependency[feature][perm]);
+                for (var permFeature of permFeatures) {
+                    var targetAr = featuresPermissionDependency[feature][perm][permFeature];
+                    if (targetAr.length && targetAr.indexOf('r') === -1) {
+                        featuresPermissionDependency[feature][perm][permFeature].push('r');
+                    }
+                }
+            }
+        }
+        //check permission dependency for each app
+        const crudTypes = ["c", "r", "u", "d"];
+        crudTypes.forEach(function(crudType) {
+            let apps = params.qstring.args && params.qstring.args.permission && params.qstring.args.permission[crudType] || {};
+            Object.keys(apps).forEach(function(app) {
+                let feats = apps[app].allowed || {};
+                Object.keys(feats).forEach(function(feat) {
+                    let featEnabled = feats[feat];
+                    //check if feature is enabled and if it has any dependency
+                    if (featEnabled && featuresPermissionDependency[feat] && featuresPermissionDependency[feat][crudType]) {
+                        let depFeats = featuresPermissionDependency[feat][crudType];
+                        Object.keys(depFeats).forEach(function(depFeat) {
+                            depFeats[depFeat].forEach(function(crudPerm) {
+                                //add dependency permissions
+                                params.qstring.args.permission[crudPerm][app].allowed[depFeat] = true;
+                            });
+                        });
+                    }
+                });
+            });
+        });
+    });
+}
+
 /**
 * Updates dashboard user's data and output result to browser
 * @param {params} params - params object
@@ -360,8 +418,6 @@ usersApi.updateUser = async function(params) {
             'user_id': {
                 'required': true,
                 'type': 'String',
-                'min-length': 24,
-                'max-length': 24,
                 'exclude-from-ret-obj': true
             },
             'full_name': {
@@ -412,11 +468,16 @@ usersApi.updateUser = async function(params) {
             'permission': {
                 'required': false,
                 'type': 'Object'
-            }
+            },
+            'subscribe_newsletter': {
+                'required': false,
+                'type': 'Boolean'
+            },
         },
         updatedMember = {},
         passwordNoHash = "";
 
+    await depCheck(params);
     var updateUserValidation = common.validateArgs(params.qstring.args, argProps, true);
     if (!(updatedMember = updateUserValidation.obj)) {
         common.returnMessage(params, 400, updateUserValidation.errors);
@@ -435,7 +496,7 @@ usersApi.updateUser = async function(params) {
         updatedMember.username = updatedMember.username.trim();
     }
     if (updatedMember.email) {
-        updatedMember.email = updatedMember.email.trim();
+        updatedMember.email = updatedMember.email.trim().toString().toLowerCase();
     }
 
     if (params.qstring.args.member_image && params.qstring.args.member_image === 'delete') {
@@ -446,6 +507,10 @@ usersApi.updateUser = async function(params) {
     if (updatedMember.admin_of) {
         if (Array.isArray(updatedMember.admin_of) && updatedMember.admin_of.length) {
             updatedMember.permission = updatedMember.permission || {};
+            if (!updatedMember.permission._) {
+                updatedMember.permission._ = {};
+            }
+            updatedMember.permission._.a = updatedMember.admin_of;
             updatedMember.permission.c = updatedMember.permission.c || {};
             updatedMember.permission.r = updatedMember.permission.r || {};
             updatedMember.permission.u = updatedMember.permission.u || {};
@@ -463,6 +528,10 @@ usersApi.updateUser = async function(params) {
     if (updatedMember.user_of) {
         if (Array.isArray(updatedMember.user_of) && updatedMember.user_of.length) {
             updatedMember.permission = updatedMember.permission || {};
+            if (!updatedMember.permission._) {
+                updatedMember.permission._ = {};
+            }
+            updatedMember.permission._.u = [updatedMember.user_of];
             updatedMember.permission.r = updatedMember.permission.r || {};
             for (let i = 0; i < updatedMember.user_of.length; i++) {
                 updatedMember.permission.r[updatedMember.user_of[i]] = updatedMember.permission.r[updatedMember.user_of[i]] || {all: true, allowed: {}};
@@ -473,7 +542,11 @@ usersApi.updateUser = async function(params) {
 
 
     common.db.collection('members').findOne({ '_id': common.db.ObjectID(params.qstring.args.user_id) }, function(err, memberBefore) {
-        common.db.collection('members').update({ '_id': common.db.ObjectID(params.qstring.args.user_id) }, { '$set': updatedMember }, { safe: true }, function() {
+        common.db.collection('members').update({ '_id': common.db.ObjectID(params.qstring.args.user_id) }, { '$set': updatedMember }, { safe: true }, function(errUpdatingUser) {
+            if (errUpdatingUser) {
+                common.returnMessage(params, 500, 'Error updating user. Please check api logs.');
+                return false;
+            }
             common.db.collection('members').findOne({ '_id': common.db.ObjectID(params.qstring.args.user_id) }, function(err2, member) {
                 if (member && !err2) {
                     updatedMember._id = params.qstring.args.user_id;
@@ -510,13 +583,14 @@ usersApi.updateUser = async function(params) {
 * @param {params} params - params object
 * @returns {boolean} true if user was deleted
 **/
-usersApi.deleteUser = function(params) {
+usersApi.deleteUser = async function(params) {
     var argProps = {
             'user_ids': {
                 'required': true,
                 'type': 'Array'
             }
         },
+        fails = 0,
         userIds = [];
 
     var deleteUserValidation = common.validateArgs(params.qstring.args, argProps, true);
@@ -526,26 +600,59 @@ usersApi.deleteUser = function(params) {
     }
 
     for (var i = 0; i < userIds.length; i++) {
-        // Each user id should be 24 chars long and a user can't delete his own account
-        if (!userIds[i] || userIds[i] === params.member._id + "" || userIds[i].length !== 24) {
+        //a user can't delete his own account
+        //string id can also exist due to cognito, so no check for 24 chars length
+        if (!userIds[i] || userIds[i] === params.member._id + "") {
             continue;
         }
         else {
-            common.db.collection('auth_tokens').remove({ 'owner': userIds[i] }, function() {});
-            common.db.collection('members').findAndModify({ '_id': common.db.ObjectID(userIds[i]) }, {}, {}, { remove: true }, function(err, user) {
-                if (!err && user && user.ok && user.value) {
+            const user = await common.db.collection('members').findOne({ '_id': common.db.ObjectID(userIds[i]) });
+            const promisifiedDispatch = function(prms, data) {
+                return new Promise((resolve, reject) => {
                     plugins.dispatch("/i/users/delete", {
-                        params: params,
-                        data: user.value
+                        params: prms,
+                        data,
+                    }, async(__, otherPluginResults) => {
+                        const rejectReasons = otherPluginResults.reduce((acc, result) => {
+                            if (result.status === "rejected") {
+                                acc.push((result.reason && result.reason.message) || '');
+                            }
+
+                            return acc;
+                        }, []);
+
+                        if (rejectReasons.length > 0) {
+                            log.e("User " + userIds[i] + " deletion failed\n%j", rejectReasons.join("\n"));
+                            fails += 1;
+                            reject(false);
+                        }
+                        else {
+                            await common.db.collection('auth_tokens').remove({ 'owner': userIds[i] });
+                            await usersApi.deleteUserNotes({ member: { _id: userIds[i] } });
+                            await common.db.collection('members').remove({_id: common.db.ObjectID(userIds[i])});
+                            deleteUserPresets(userIds[i]);
+                            resolve(true);
+                        }
                     });
-                    usersApi.deleteUserNotes({member: {_id: user.value._id.toString()}});
-                }
-            });
+                });
+            };
+
+            await promisifiedDispatch(params, user);
         }
     }
 
-    common.returnMessage(params, 200, 'Success');
-    return true;
+    if (fails === 0) {
+        common.returnMessage(params, 200, 'Success');
+        return true;
+    }
+    else if (fails === userIds.length) {
+        common.returnMessage(params, 500, 'User deletion failed, please see logs for more detail');
+        return false;
+    }
+    else {
+        common.returnMessage(params, 200, 'Some users cannot be deleted, please see logs for more detail');
+        return true;
+    }
 };
 
 // created functions below are for account deletion. when merging together with next should remove  and include from members utility !!!!!! 
@@ -654,12 +761,49 @@ function verifyMemberArgon2Hash(username, password, callback) {
     });
 }
 
+/**
+ * Delete user's date presets
+ * @param {string} memberId | User id
+ */
+function deleteUserPresets(memberId) {
+    common.db.collection("date_presets").remove({owner: memberId + ""}, function() {
+        //handle errors
+    });
+}
+
 // END of reused functions 
 
 
 usersApi.deleteOwnAccount = function(params) {
     if (params.qstring.password && params.qstring.password !== "") {
         verifyMemberArgon2Hash(params.member.email, params.qstring.password, (err, member) => {
+            const dispatchDeleteCallback = async function(__, otherPluginResults) {
+                const rejectReasons = otherPluginResults.reduce((acc, result) => {
+                    if (result.status === "rejected") {
+                        acc.push((result.reason && result.reason.message) || '');
+                    }
+
+                    return acc;
+                }, []);
+
+                if (rejectReasons.length > 0) {
+                    log.e("User deletion failed\n%j", rejectReasons.join("\n"));
+                    common.returnMessage(params, 500, { errorMessage: "User deletion failed. Failed to delete some data related to this user." });
+                }
+                else {
+                    try {
+                        await common.db.collection('members').remove({_id: common.db.ObjectID(member._id + "")});
+                        killAllSessionForUser(member._id);
+                        deleteUserPresets(member._id);
+                        common.returnMessage(params, 200, 'Success');
+                    }
+                    catch (err1) {
+                        console.log(err1);
+                        common.returnMessage(params, 400, 'Mongo error');
+                    }
+                }
+            };
+
             if (member) {
                 if (member.global_admin) {
                     common.db.collection('members').count({'global_admin': true}, function(err2, count) {
@@ -671,40 +815,18 @@ usersApi.deleteOwnAccount = function(params) {
                             common.returnMessage(params, 400, 'global admin limit');
                         }
                         else {
-                            common.db.collection('members').remove({_id: common.db.ObjectID(member._id + "")}, function(err1 /*, res1*/) {
-                                if (err1) {
-                                    console.log(err1);
-                                    common.returnMessage(params, 400, 'Mongo error');
-                                }
-                                else {
-                                    plugins.dispatch("/i/users/delete", {
-                                        params: params,
-                                        data: member
-                                    });
-                                    killAllSessionForUser(member._id);
-                                    common.returnMessage(params, 200, 'Success');
-                                }
-                            });
-                        }
-
-                    });
-
-                }
-                else {
-                    common.db.collection('members').remove({_id: common.db.ObjectID(member._id + "")}, function(err3 /* , res1*/) {
-                        if (err3) {
-                            console.log(err3);
-                            common.returnMessage(params, 400, 'Mongo error');
-                        }
-                        else {
                             plugins.dispatch("/i/users/delete", {
                                 params: params,
                                 data: member
-                            });
-                            killAllSessionForUser(member._id);
-                            common.returnMessage(params, 200, 'Success');
+                            }, dispatchDeleteCallback);
                         }
                     });
+                }
+                else {
+                    plugins.dispatch("/i/users/delete", {
+                        params: params,
+                        data: member
+                    }, dispatchDeleteCallback);
                 }
             }
             else {
@@ -780,10 +902,6 @@ usersApi.saveNote = async function(params) {
         'category': {
             'required': false,
             'type': 'Boolean'
-        },
-        "indicator": {
-            'required': false,
-            'type': 'String'
         }
     };
     const args = params.qstring.args;
@@ -821,12 +939,24 @@ usersApi.saveNote = async function(params) {
             }
         }
         else {
-            note.indicator = args.indicator;
-            common.db.collection('notes').insert(note, (err) => {
+            common.db.collection('notes').find({ "app_id": args.app_id }).sort({ "created_at": -1 }).limit(1).project({ "indicator": 1 }).toArray(function(err, res) {
                 if (err) {
-                    common.returnMessage(params, 503, 'Insert Note failed.');
+                    common.returnMessage(params, 503, 'Save note failed');
                 }
-                common.returnMessage(params, 200, 'Success');
+                else {
+                    if (res && res.length) {
+                        note.indicator = countlyCommon.stringIncrement(res[0].indicator);
+                    }
+                    else {
+                        note.indicator = "A";
+                    }
+                    common.db.collection('notes').insert(note, (_err) => {
+                        if (_err) {
+                            common.returnMessage(params, 503, 'Insert Note failed.');
+                        }
+                        common.returnMessage(params, 200, 'Success');
+                    });
+                }
             });
         }
     }
@@ -925,7 +1055,7 @@ usersApi.fetchNotes = async function(params) {
             appIds = await usersApi.fetchUserAppIds(params);
         }
         filteredAppIds = appIds.filter((appId) => {
-            if (hasAdminAccess(params.member, appId)) {
+            if (hasAdminAccess(params.member, appId) || hasReadRight('core', appId, params.member)) {
                 return true;
             }
             return false;

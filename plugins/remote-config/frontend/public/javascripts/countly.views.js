@@ -1,4 +1,4 @@
-/*global _,countlyQueryBuilder, app, moment, countlyGlobal, countlyVue, countlyCommon, countlyAuth, CV, CountlyHelpers, countlyRemoteConfig */
+/*global _, VeeValidate, countlyQueryBuilder, app, moment, countlyGlobal, countlyVue, countlyCommon, countlyAuth, CV, CountlyHelpers, countlyRemoteConfig */
 
 (function() {
     var FEATURE_NAME = "remote_config";
@@ -34,6 +34,20 @@
         s: CV.i18n("remote-config.type.s"),
         l: CV.i18n("remote-config.type.l")
     };
+
+    VeeValidate.extend('oneDay', {
+        validate: function(inpValue) {
+            var valid = true;
+
+            if (moment.duration(moment(inpValue).diff(moment())).asDays() < 1) {
+                valid = false;
+            }
+
+            return {
+                valid: valid,
+            };
+        },
+    });
 
     var ConditionStats = countlyVue.views.BaseView.extend({
         template: '	<table class="cly-vue-remote-config-percentages-breakdown">\
@@ -166,7 +180,7 @@
                     id: "disallowOperator",
                     params: {
                         selector: function(operator) {
-                            return ["cly.=", "cly.!=", "cly.contains", "cly.between", "cly.isset"].includes(operator.id);
+                            return ["cly.=", "cly.!=", "cly.contains", "cly.between", "cly.isset", "cly.beginswith"].includes(operator.id);
                         }
                     }
                 })]
@@ -325,6 +339,7 @@
     });
     var ParametersDrawer = countlyVue.views.create({
         template: CV.T("/remote-config/templates/parameters-drawer.html"),
+        mixins: [countlyVue.mixins.commonFormatters],
         components: {
             "json-editor": JsonEditor,
 
@@ -377,7 +392,37 @@
                 createdCondition: {}
             };
         },
+        watch: {
+            showExpirationDate: {
+                immediate: true,
+                handler: function(newValue) {
+                    if (this.$refs.clyDrawer) {
+                        if (newValue === true) {
+                            if (!this.$refs.clyDrawer.editedObject.expiry_dttm) {
+                                var currentTime = moment();
+                                this.$refs.clyDrawer.editedObject.expiry_dttm = currentTime.add(moment.duration(25, 'hours')).valueOf();
+                            }
+                        }
+                        else if (newValue === false) {
+                            this.$refs.clyDrawer.editedObject.expiry_dttm = null;
+                        }
+                    }
+                },
+            },
+        },
         methods: {
+            handleOpen: function() {
+                if (this.$refs.clyDrawer.editedObject.description) {
+                    this.$refs.clyDrawer.editedObject.description = this.unescapeHtml(this.$refs.clyDrawer.editedObject.description);
+                }
+
+                var self = this;
+                setTimeout(function() {
+                    if (self.$refs.expirationValidator) {
+                        self.$refs.expirationValidator.validate();
+                    }
+                }, 300);
+            },
             getOffset: function() {
                 var activeAppId = countlyCommon.ACTIVE_APP_ID;
                 var timeZone = countlyGlobal.apps[activeAppId].timezone ? countlyGlobal.apps[activeAppId].timezone : 'UTC';
@@ -441,10 +486,10 @@
                 };
             },
             onSubmit: function(doc) {
-                if (doc.expiry_dttm && doc.showExpirationDate) {
+                if (doc.expiry_dttm && this.showExpirationDate) {
                     doc.expiry_dttm = doc.expiry_dttm + new Date().getTimezoneOffset() * 60 * 1000;
                 }
-                if (!doc.showExpirationDate) {
+                if (!this.showExpirationDate) {
                     doc.expiry_dttm = null;
                 }
                 var self = this;
@@ -481,7 +526,7 @@
                         doc.expiry_dttm = doc.expiry_dttm - new Date().getTimezoneOffset() * 60 * 1000;
                     }
                     this.showExpirationDate = false;
-                    this.defaultValue = doc.default_value;
+                    this.defaultValue = doc.default_value + '';
 
                     if (doc.description === "-") {
                         doc.description = "";
@@ -550,6 +595,7 @@
     });
     var ConditionsDrawer = countlyVue.views.create({
         template: CV.T("/remote-config/templates/conditions-drawer.html"),
+        mixins: [countlyVue.mixins.commonFormatters],
         props: {
             controls: {
                 type: Object
@@ -604,6 +650,11 @@
             };
         },
         methods: {
+            handleOpen: function() {
+                if (this.$refs.clyDrawer.editedObject.condition_description) {
+                    this.$refs.clyDrawer.editedObject.condition_description = this.unescapeHtml(this.$refs.clyDrawer.editedObject.condition_description);
+                }
+            },
             onSubmit: function(doc) {
                 var self = this;
                 doc.condition_color = this.selectedTag.value ? this.selectedTag.value : 1;
@@ -706,6 +757,13 @@
             }
         },
         methods: {
+            displayDescription: function(description) {
+                if (description && description.length) {
+                    return this.unescapeHtml(description);
+                }
+
+                return '-';
+            },
             getOffset: function() {
                 var activeAppId = countlyCommon.ACTIVE_APP_ID;
                 var timeZone = countlyGlobal.apps[activeAppId].timezone ? countlyGlobal.apps[activeAppId].timezone : 'UTC';
@@ -736,19 +794,22 @@
             create: function() {
                 this.openDrawer("parameters", countlyRemoteConfig.factory.parameters.getEmpty());
             },
-            startParameter: function(row) {
+            toggleParameterState(rowObj, status) {
+                var row = Object.assign({}, rowObj);
+                var refresh = this.refresh;
                 if (row.expiry_dttm < Date.now()) {
                     row.expiry_dttm = null;
                 }
-                row.status = "Running";
-                this.$store.dispatch("countlyRemoteConfig/parameters/update", row);
+                row.status = status;
+                this.$store.dispatch("countlyRemoteConfig/parameters/update", row).then(function() {
+                    refresh();
+                });
             },
-            stopParameter: function(row) {
-                if (row.expiry_dttm < Date.now()) {
-                    row.expiry_dttm = null;
-                }
-                row.status = "Stopped";
-                this.$store.dispatch("countlyRemoteConfig/parameters/update", row);
+            startParameter: function(rowObj) {
+                this.toggleParameterState(rowObj, "Running");
+            },
+            stopParameter: function(rowObj) {
+                this.toggleParameterState(rowObj, "Stopped");
             },
             handleCommand: function(command, scope, row) {
                 var self = this;
@@ -772,7 +833,7 @@
                 }
             },
             onSubmit: function() {
-                this.$store.dispatch("countlyRemoteConfig/initialize");
+                this.refresh();
             },
             handleTableRowClick: function(row) {
                 // Only expand row if text inside of it are not highlighted
@@ -782,8 +843,30 @@
             },
             tableRowClassName: function() {
                 return "bu-is-clickable";
-            }
-        }
+            },
+            formatExportFunction: function() {
+                var tableData = this.$store.getters["countlyRemoteConfig/parameters/all"];
+                var table = [];
+                for (var i = 0; i < tableData.length; i++) {
+                    var item = {};
+                    item[CV.i18n('remote-config.parameter').toUpperCase()] = tableData[i].parameter_key + (this.isDrillEnabled ? this.getNumberOfConditionsText(tableData[i].conditions) : "");
+                    item[CV.i18n('remote-config.parameter.status').toUpperCase()] = tableData[i].status;
+                    item[CV.i18n('remote-config.description').toUpperCase()] = tableData[i].description === "-" ? "" : tableData[i].description;
+                    item[CV.i18n('remote-config.parameter.created').toUpperCase()] = countlyCommon.formatTimeAgoText(tableData[i].ts).text;
+                    item[CV.i18n('remote-config.parameter.ab.status').toUpperCase()] = tableData[i].abStatus;
+
+                    table.push(item);
+                }
+                return table;
+
+            },
+            refresh: function() {
+                this.$store.dispatch("countlyRemoteConfig/initialize");
+            },
+        },
+        created: function() {
+            this.$store.dispatch("countlyRemoteConfig/parameters/setTableLoading", true);
+        },
     });
 
     var ConditionsComponent = countlyVue.views.BaseView.extend({
@@ -810,6 +893,13 @@
             }
         },
         methods: {
+            displayDescription: function(description) {
+                if (description && description.length) {
+                    return this.unescapeHtml(description);
+                }
+
+                return '-';
+            },
             create: function() {
                 this.openDrawer("conditions", countlyRemoteConfig.factory.conditions.getEmpty());
             },
@@ -862,6 +952,7 @@
 
     var MainComponent = countlyVue.views.BaseView.extend({
         template: "#remote-config-main",
+        mixins: [countlyVue.mixins.commonFormatters],
         data: function() {
             var tabs = [
                 {
@@ -887,14 +978,13 @@
         beforeCreate: function() {
             var self = this;
             this.$store.dispatch("countlyRemoteConfig/initialize").then(function() {
-                self.$store.dispatch("countlyRemoteConfig/parameters/setTableLoading", false);
                 self.$store.dispatch("countlyRemoteConfig/conditions/setTableLoading", false);
             });
         },
         methods: {
             refresh: function() {
                 this.$store.dispatch("countlyRemoteConfig/initialize");
-            }
+            },
         }
     });
 
@@ -937,5 +1027,5 @@
         mainView.params = params;
         this.renderWhenReady(mainView);
     });
-    app.addMenu("improve", {code: "remote-config", permission: FEATURE_NAME, url: "#/remote-config", text: "sidebar.remote-config", icon: '<div class="logo"><i class="material-icons" style="transform:rotate(90deg)"> call_split </i></div>', priority: 30});
+    app.addMenu("improve", {code: "remote-config", permission: FEATURE_NAME, pluginName: "remote-config", url: "#/remote-config", text: "sidebar.remote-config", icon: '<div class="logo"><i class="material-icons" style="transform:rotate(90deg)"> call_split </i></div>', priority: 30});
 })();

@@ -12,8 +12,7 @@ var exports = {},
 
 const log = require('./../../utils/log.js')('core:export');
 
-//npm install node-xlsx-stream !!!!!
-var xlsx = require("node-xlsx-stream");
+var XLSXTransformStream = require('xlsx-write-stream');
 const Transform = require('stream').Transform;
 var contents = {
     "json": "application/json",
@@ -168,20 +167,18 @@ exports.convertData = function(data, type) {
     case "xls":
     case "xlsx":
         obj = flattenArray(data);
-        var xc = xlsx();
-        var sheet = xc.sheet("Countly export");
-        sheet.write(obj.fields);
+        var stream = new XLSXTransformStream();
+        stream.write(obj.fields);
         for (var k = 0; k < obj.data.length; k++) {
             var arr1 = [];
             for (var z = 0; z < obj.fields.length; z++) {
                 arr1.push(obj.data[k][obj.fields[z]] || "");
             }
-            sheet.write(arr1);
+            stream.write(arr1);
         }
-        sheet.end();
-        xc.finalize();
+        stream.end();
 
-        return xc;
+        return stream;
     default:
         return data;
     }
@@ -224,11 +221,17 @@ exports.output = function(params, data, filename, type) {
 * @param {object} value - any value
 * @param {string} key - key
 * @param {object} mapper - object with information how to transform data
+* @param {object} doc - original document
 * @returns {string} transformed value
 */
-function transformValue(value, key, mapper) {
+function transformValue(value, key, mapper, doc) {
     if (mapper && mapper.fields && mapper.fields[key]) {
         //if we need we can easy add later different transformations and pass other params for them
+        if (mapper.fields[key].formula) {
+            if (mapper.fields[key].formula.$eq) {
+                value = doc[mapper.fields[key].formula.$eq];
+            }
+        }
         if (mapper.fields[key].to && mapper.fields[key].to === "time") {
             if (value) {
                 if (Math.round(value).toString().length === 10) {
@@ -247,6 +250,16 @@ function transformValue(value, key, mapper) {
                 }
             }
         }
+        if (mapper.fields[key].type) {
+            switch (mapper.fields[key].type) {
+            case "number":
+                value = common.formatNumber(value);
+                break;
+            case "second":
+                value = common.formatSecond(value);
+                break;
+            }
+        }
         return value;
     }
     else {
@@ -261,8 +274,14 @@ function transformValue(value, key, mapper) {
 * @returns {object} object with transformed data
 */
 function transformValuesInObject(doc, mapper) {
+    var docOrig = JSON.parse(JSON.stringify(doc));
     for (var z in doc) {
-        doc[z] = transformValue(doc[z], z, mapper);
+        doc[z] = transformValue(doc[z], z, mapper, docOrig);
+    }
+    if (mapper && mapper.calculated_fields) {
+        for (var n = 0; n < mapper.calculated_fields.length; n++) {
+            doc[mapper.calculated_fields[n]] = transformValue(0, mapper.calculated_fields[n], mapper, docOrig);
+        }
     }
     return doc;
 }
@@ -277,13 +296,14 @@ function transformValuesInObject(doc, mapper) {
 function getValues(values, valuesMap, paramList, doc, options) {
     if (options && options.collectProp) {
         doc = flattenObject(doc);
+        var docOrig = JSON.parse(JSON.stringify(doc));
         var keys = Object.keys(doc);
         for (var z = 0; z < keys.length; z++) {
             valuesMap[keys[z]] = false;
         }
         for (var p = 0; p < paramList.length; p++) {
             if (doc[paramList[p]]) {
-                values.push(transformValue(doc[paramList[p]], paramList[p], options.mapper));
+                values.push(transformValue(doc[paramList[p]], paramList[p], options.mapper, docOrig));
             }
             else {
                 values.push("");
@@ -292,7 +312,7 @@ function getValues(values, valuesMap, paramList, doc, options) {
         }
         for (var k in valuesMap) {
             if (valuesMap[k] === false) {
-                values.push(transformValue(doc[k], k, options.mapper));
+                values.push(transformValue(doc[k], k, options.mapper, docOrig));
                 paramList.push(k);
             }
         }
@@ -301,7 +321,7 @@ function getValues(values, valuesMap, paramList, doc, options) {
         for (var kz = 0; kz < paramList.length; kz++) {
             var value = common.getDescendantProp(doc, paramList[kz]) || "";
             if (typeof value === 'object' || Array.isArray(value)) {
-                values.push(JSON.stringify(transformValue(value, paramList[kz], options.mapper)));
+                values.push(JSON.stringify(transformValue(value, paramList[kz], options.mapper, docOrig)));
             }
             else {
                 values.push(transformValue(value, paramList[kz], options.mapper));
@@ -321,7 +341,10 @@ function getValues(values, valuesMap, paramList, doc, options) {
 */
 exports.stream = function(params, stream, options) {
     var headers = {};
-
+    var emptyFun = function(val) {
+        return val;
+    };
+    var transformFunction = options.transformFunction || emptyFun;
     var filename = options.filename;
     var type = options.type;
     var projection = options.projection;
@@ -342,6 +365,7 @@ exports.stream = function(params, stream, options) {
         params.res.writeHead(200, headers);
     }
     if (type === "csv") {
+        options.streamOptions.transform = transformFunction;
         var head = [];
         if (listAtEnd === false) {
             for (let p = 0; p < paramList.length; p++) {
@@ -374,26 +398,25 @@ exports.stream = function(params, stream, options) {
         });
     }
     else if (type === 'xlsx' || type === 'xls') {
-        var xc = xlsx();
+        options.streamOptions.transform = transformFunction;
+        var xc = new XLSXTransformStream();
         xc.pipe(params.res);
-        var sheet = xc.sheet("Countly export");
         if (listAtEnd === false) {
-            sheet.write(paramList);
+            xc.write(paramList);
         }
         stream.stream(options.streamOptions).on('data', function(doc) {
             var values = [];
             var valuesMap = {};
             getValues(values, valuesMap, paramList, doc, {mapper: mapper, collectProp: listAtEnd});
-            sheet.write(values);
+            xc.write(values);
         });
 
         stream.once('close', function() {
             setTimeout(function() {
                 if (listAtEnd) {
-                    sheet.write(paramList);
+                    xc.write(paramList);
                 }
-                sheet.end();
-                xc.finalize();
+                xc.end();
             }, 100);
         });
     }
@@ -419,8 +442,27 @@ exports.stream = function(params, stream, options) {
     }
 };
 
-
-
+/**
+ * Check if id is valid ObjectID
+ * @param {string} id - id to check
+ * @returns {boolean} true if valid
+ * */
+function isObjectId(id) {
+    var checkForHexRegExp = new RegExp("^[0-9a-fA-F]{24}$");
+    if (typeof id === "undefined" || id === null) {
+        return false;
+    }
+    if ((typeof id !== "undefined" && id !== null) && 'number' !== typeof id && (id.length !== 24)) {
+        return false;
+    }
+    else {
+        // Check specifically for hex correctness
+        if (typeof id === 'string' && id.length === 24) {
+            return checkForHexRegExp.test(id);
+        }
+        return true;
+    }
+}
 
 /**
 * Export data from database
@@ -466,47 +508,59 @@ exports.fromDatabase = function(options) {
         }
     }
     alternateName += "_exported_on_" + moment().format("DD-MMM-YYYY");
-    options.filename = options.filename || alternateName;
+    options.filename = options.filename || options.params.qstring.filename || alternateName;
 
     if (options.collection.startsWith("app_users")) {
         options.params.qstring.method = "user_details";
         options.params.app_id = options.collection.replace("app_users", "");
     }
-    plugin.dispatch("/drill/preprocess_query", {
-        query: options.query,
-        params: options.params
-    }, ()=>{
-        var cursor = options.db.collection(options.collection).find(options.query, {"projection": options.projection});
-        if (options.sort) {
-            cursor.sort(options.sort);
-        }
 
-        if (options.skip) {
-            cursor.skip(parseInt(options.skip));
-        }
-        if (options.limit) {
-            cursor.limit(parseInt(options.limit));
-        }
-        options.streamOptions = {};
-        if (options.type === "stream" || options.type === "json") {
-            options.streamOptions.transform = function(doc) {
-                doc = transformValuesInObject(doc, options.mapper);
-                return JSON.stringify(doc);
-            };
-        }
-        if (options.type === "stream" || options.type === "json" || options.type === "xls" || options.type === "xlsx" || options.type === "csv") {
-            options.output = options.output || function(stream) {
-                exports.stream(options.params, stream, options);
-            };
-            options.output(cursor);
-        }
-        else {
-            cursor.toArray(function(err, data) {
-                exports.fromData(data, options);
-            });
-        }
+    if (options.params && options.params.qstring && options.params.qstring.get_index && options.params.qstring.get_index !== null) {
+        options.db.collection(options.collection).indexes(function(err, indexes) {
+            if (!err) {
+                exports.fromData(indexes, options);
+            }
+        });
+    }
+    else {
+        plugin.dispatch("/drill/preprocess_query", {
+            query: options.query,
+            params: options.params
+        }, ()=>{
+            if (options.query._id && isObjectId(options.query._id)) {
+                options.query._id = common.db.ObjectID(options.query._id);
+            }
+            var cursor = options.db.collection(options.collection).find(options.query, {"projection": options.projection});
+            if (options.sort) {
+                cursor.sort(options.sort);
+            }
 
-    });
+            if (options.skip) {
+                cursor.skip(parseInt(options.skip));
+            }
+            if (options.limit) {
+                cursor.limit(parseInt(options.limit));
+            }
+            options.streamOptions = {};
+            if (options.type === "stream" || options.type === "json") {
+                options.streamOptions.transform = function(doc) {
+                    doc = transformValuesInObject(doc, options.mapper);
+                    return JSON.stringify(doc);
+                };
+            }
+            if (options.type === "stream" || options.type === "json" || options.type === "xls" || options.type === "xlsx" || options.type === "csv") {
+                options.output = options.output || function(stream) {
+                    exports.stream(options.params, stream, options);
+                };
+                options.output(cursor);
+            }
+            else {
+                cursor.toArray(function(err, data) {
+                    exports.fromData(data, options);
+                });
+            }
+        });
+    }
 };
 
 /**
@@ -551,6 +605,30 @@ exports.fromRequest = function(options) {
                         body = body[path[i]];
                     }
                 }
+                if (options.projection) {
+                    for (var key in body) {
+                        for (var prop in body[key]) {
+                            if (!options.projection[prop]) {
+                                delete body[key][prop];
+                            }
+                        }
+                    }
+                }
+                if (options.columnNames || options.mapper) {
+                    for (key in body) {
+                        if (options.mapper) {
+                            body[key] = transformValuesInObject(body[key], options.mapper);
+                        }
+                        for (prop in body[key]) {
+                            if (options.columnNames) {
+                                if (options.columnNames[prop]) {
+                                    body[key][options.columnNames[prop]] = body[key][prop];
+                                    delete body[key][prop];
+                                }
+                            }
+                        }
+                    }
+                }
                 data = body;
             }
             catch (ex) {
@@ -567,6 +645,7 @@ exports.fromRequest = function(options) {
 
 
 exports.fromRequestQuery = function(options) {
+    options.db = options.db || common.db;
     options.path = options.path || "/";
     if (!options.path.startsWith("/")) {
         options.path = "/" + options.path;
@@ -588,7 +667,10 @@ exports.fromRequestQuery = function(options) {
                 log.e(err);
             }
             if (body) {
-                var cursor = common.db.collection(body.collection).aggregate(body.pipeline);
+                if (body.transformFunction) {
+                    options.transformFunction = body.transformFunction;
+                }
+                var cursor = options.db.collection(body.collection).aggregate(body.pipeline);
                 options.projection = body.projection;
                 var outputStream = new Transform({
                     objectMode: true,
@@ -600,7 +682,12 @@ exports.fromRequestQuery = function(options) {
                 if (options.type === "stream" || options.type === "json") {
                     options.streamOptions.transform = function(doc) {
                         doc = transformValuesInObject(doc, options.mapper);
-                        return JSON.stringify(doc);
+                        if (body.transformFunction) {
+                            return JSON.stringify(body.transformFunction(doc));
+                        }
+                        else {
+                            return JSON.stringify(doc);
+                        }
                     };
                 }
                 exports.stream({res: outputStream}, cursor, options);

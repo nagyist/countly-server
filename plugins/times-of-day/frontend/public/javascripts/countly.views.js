@@ -21,7 +21,7 @@
                 return this.$store.state.countlyTimesOfDay.rows;
             },
             isLoading: function() {
-                return this.$store.getters['countlyTimesOfDay/isLoading'];
+                return this.$store.getters['countlyTimesOfDay/loading'];
             },
             selectedFilter: {
                 get: function() {
@@ -58,8 +58,10 @@
         priority: 3,
         name: "times-of-day",
         permission: featureName,
+        pluginName: "times-of-day",
         title: CV.i18n('times-of-day.title'),
         route: "#/analytics/loyalty/times-of-day",
+        dataTestId: "times-of-day",
         component: TimesOfDayView,
         vuex: [{
             clyModel: countlyTimesOfDay
@@ -122,6 +124,7 @@
         type: "times-of-day",
         label: CV.i18n("times-of-day.title"),
         priority: 8,
+        pluginName: "times-of-day",
         primary: true,
         getter: function(widget) {
             return widget.widget_type === "times-of-day";

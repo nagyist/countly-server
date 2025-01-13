@@ -4,8 +4,9 @@ const job = require('../parts/jobs/job.js'),
     log = require('../utils/log.js')('job:ping'),
     countlyConfig = require("../../frontend/express/config.js"),
     versionInfo = require('../../frontend/express/version.info'),
-    request = require('request'),
-    plugins = require('../../plugins/pluginManager.js');
+    plugins = require('../../plugins/pluginManager.js'),
+    request = require('countly-request')(plugins.getConfig("security"));
+
 
 /** Class for the job of pinging servers **/
 class PingJob extends job.Job {
@@ -23,6 +24,7 @@ class PingJob extends job.Job {
         }
         plugins.loadConfigs(db, function() {
             const offlineMode = plugins.getConfig("api").offline_mode;
+            const { countly_tracking } = plugins.getConfig('frontend');
             if (!offlineMode) {
                 request(url, function(err, response, body) {
                     if (typeof body === "string") {
@@ -47,17 +49,28 @@ class PingJob extends job.Job {
                         }
                     }
                     log.d(err, body, countlyConfigOrig, countlyConfig);
-                    if (countlyConfig.web.track !== "none") {
+                    if (countly_tracking) {
                         db.collection("members").findOne({global_admin: true}, function(err2, member) {
                             if (!err2 && member) {
                                 var date = new Date();
+                                let domain = plugins.getConfig('api').domain;
+
+                                try {
+                                    // try to extract hostname from full domain url
+                                    const urlObj = new URL(domain);
+                                    domain = urlObj.hostname;
+                                }
+                                catch (_) {
+                                    // do nothing, domain from config will be used as is
+                                }
+
                                 request({
                                     uri: "https://stats.count.ly/i",
                                     method: "GET",
                                     timeout: 4E3,
                                     qs: {
-                                        device_id: member.email,
-                                        app_key: "386012020c7bf7fcb2f1edf215f1801d6146913f",
+                                        device_id: domain,
+                                        app_key: "e70ec21cbe19e799472dfaee0adb9223516d238f",
                                         timestamp: Math.floor(date.getTime() / 1000),
                                         hour: date.getHours(),
                                         dow: date.getDay(),

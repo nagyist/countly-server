@@ -1,4 +1,5 @@
-const request = require("request");
+const plugins = require("../../../../pluginManager.js");
+const request = require("countly-request")(plugins.getConfig("security"));
 const utils = require("../../utils");
 const common = require('../../../../../api/utils/common.js');
 const log = common.log("hooks:api:api_endpoint_trigger");
@@ -65,10 +66,18 @@ class HTTPEffect {
                 //support post formData
                 let parsedJSON = {};
                 try {
-                    parsedJSON = JSON.parse(jsonEscape(parsedRequestData));
-                    for (var key in parsedJSON) {
-                        parsedJSON[key] = jsonUnEscape(parsedJSON[key]);
+                    var ret = common.getJSON(parsedRequestData);
+                    if (!ret.valid) {
+                        parsedJSON = JSON.parse(jsonEscape(parsedRequestData));
+                        for (var key in parsedJSON) {
+                            parsedJSON[key] = jsonUnEscape(parsedJSON[key]);
+                        }
                     }
+                    else {
+                        parsedJSON = ret.data;
+
+                    }
+
                 }
                 catch (e) {
                     log.e('http efffect parse post data err:', e, parsedRequestData);

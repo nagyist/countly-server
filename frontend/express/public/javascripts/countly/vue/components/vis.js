@@ -1,4 +1,4 @@
-/* global Vue, countlyCommon, countlyLocation, _mergeWith, CommonConstructor, countlyGlobal, Vue2Leaflet, CV, moment, L, countlyGraphNotesCommon */
+/* global Vue, countlyCommon, countlyLocation, _mergeWith, CommonConstructor, countlyGlobal, Vue2Leaflet, CV, moment, L, countlyGraphNotesCommon, countlyAuth */
 // _mergeWith is Lodash mergeWith - /frontend/express/public/javascripts/utils/lodash.mergeWith.js
 
 (function(countlyVue) {
@@ -407,6 +407,11 @@
                 var maxLen = 0;
                 var maxStr = "";
 
+                if (xAxis.data.length) {
+                    xAxis.data = xAxis.data.map(function(item) {
+                        return countlyCommon.unescapeHtml(item);
+                    });
+                }
                 xAxis.data.forEach(function(item) {
                     var str = "";
                     if (Array.isArray(item)) {
@@ -441,6 +446,7 @@
                     returnObj.grid = {bottom: 40};
 
                     returnObj.xAxis.axisLabel.formatter = function(value) {
+                        value = countlyCommon.encodeHtml(value);
                         var ellipsis = "...";
                         var lengthToTruncate = (Math.floor(maxLen / Math.ceil(longestLabelTextW / labelW)) * 2);
                         if (value.length > lengthToTruncate) {
@@ -534,6 +540,11 @@
             noEmpty: {
                 type: Boolean,
                 default: false
+            },
+            sortBy: {
+                type: String,
+                default: "value",
+                required: false
             }
         },
         data: function() {
@@ -612,15 +623,16 @@
                                 cap: "round"
                             }
                         },
-                        formatter: function(params) {
+                        formatter: (params) => {
                             var template = "";
+                            let formatter = self.valFormatter;
                             if (params.seriesType === 'pie') {
                                 template += '<div class="bu-is-flex">\
                                                         <div class="chart-tooltip__bar bu-mr-2 bu-mt-1" style="background-color: ' + params.color + ';"></div>\
                                                         <div>\
-                                                            <div class="chart-tooltip__header text-smaller font-weight-bold bu-mb-3">' + params.seriesName + '</div>\
-                                                            <div class="text-small"> ' + params.data.name + '</div>\
-                                                            <div class="text-big">' + self.valFormatter(params.data.value) + '</div>\
+                                                            <div class="chart-tooltip__header text-smaller font-weight-bold bu-mb-3">' + this.sanitizeHtml(params.seriesName) + '</div>\
+                                                            <div class="text-small"> ' + this.sanitizeHtml(params.data.name) + '</div>\
+                                                            <div class="text-big">' + formatter(this.sanitizeHtml(params.data.value)) + '</div>\
                                                         </div>\
                                                   </div>';
 
@@ -629,26 +641,39 @@
                             else {
                                 template = "<div class='chart-tooltip" + ((params.length > 10) ? " chart-tooltip__has-scroll" : "") + "'>";
                                 if (params.length > 0) {
-                                    template += "<span class='chart-tooltip__header text-smaller font-weight-bold'>" + params[0].axisValueLabel + "</span></br>";
+                                    template += "<span class='chart-tooltip__header text-smaller font-weight-bold'>" + this.sanitizeHtml(params[0].axisValueLabel) + "</span></br>";
                                 }
 
-                                params.sort(function(a, b) {
-                                    if (typeof a.value === 'object') {
-                                        return b.value[1] - a.value[1];
-                                    }
-                                    else {
-                                        return b.value - a.value;
-                                    }
-                                });
+                                if (self.sortBy === "index") {
+                                    params.sort(function(a, b) {
+                                        return a.seriesIndex - b.seriesIndex;
+                                    });
+                                }
+                                else {
+                                    params.sort(function(a, b) {
+                                        if (typeof a.value === 'object') {
+                                            return b.value[1] - a.value[1];
+                                        }
+                                        else {
+                                            return b.value - a.value;
+                                        }
+                                    });
+                                }
 
                                 for (var i = 0; i < params.length; i++) {
+                                    if (params[i].seriesName.toLowerCase() === 'duration' || params[i].seriesName.toLowerCase() === 'avg. duration') {
+                                        formatter = countlyCommon.formatSecond;
+                                    }
+                                    else {
+                                        formatter = self.valFormatter;
+                                    }
                                     template += '<div class="chart-tooltip__body' + ((params.length > 4) ? " chart-tooltip__single-row" : " ") + '">\
                                                     <div class="chart-tooltip__bar" style="background-color: ' + params[i].color + ';"></div>\
                                                     <div class="chart-tooltip__series">\
-                                                            <span class="text-small">' + params[i].seriesName + '</span>\
+                                                            <span class="text-small">' + this.sanitizeHtml(params[i].seriesName) + '</span>\
                                                     </div>\
                                                     <div class="chart-tooltip__value">\
-                                                        <span class="text-big">' + (typeof params[i].value === 'object' ? self.valFormatter((isNaN(params[i].value[1]) ? 0 : params[i].value[1]), params[i].value, i) : self.valFormatter((isNaN(params[i].value) ? 0 : params[i].value), null, i)) + '</span>\
+                                                        <span class="text-big">' + (typeof params[i].value === 'object' ? formatter((isNaN(this.sanitizeHtml(params[i].value[1])) ? 0 : this.sanitizeHtml(params[i].value[1])), this.sanitizeHtml(params[i].value), i) : formatter((isNaN(params[i].value) ? 0 : this.sanitizeHtml(params[i].value)), null, i)) + '</span>\
                                                     </div>\
                                                 </div>';
                                 }
@@ -702,9 +727,9 @@
                             show: true,
                             color: "#81868D",
                             fontSize: 12,
-                            formatter: function(value) {
+                            formatter: (value) => {
                                 if (typeof value === "number") {
-                                    return countlyCommon.getShortNumber(value);
+                                    return countlyCommon.getShortNumber(this.sanitizeHtml(value));
                                 }
                                 return value;
                             }
@@ -841,6 +866,13 @@
                 this.patchLegend(options);
 
                 return options;
+            },
+            sanitizeHtml: function(value) {
+                if (value) {
+                    value = countlyCommon.encodeHtml(value);
+                    return countlyCommon.unescapeHtml(value);
+                }
+                return value;
             }
         }
     });
@@ -894,6 +926,11 @@
                 type: String,
                 required: false,
                 default: "weekly"
+            },
+            testId: {
+                type: String,
+                required: false,
+                default: "test-id"
             }
         },
         data: function() {
@@ -1088,18 +1125,18 @@
                                         </div>\
                                         <div class="graph-tooltip-wrapper__container">';
                         }
-                        template += '<div class="' + conditionalClassName + '">\
-                                        <div class="bu-mb-1"><span class="text-small color-cool-gray-50">#' + filteredNotes[i].indicator + '</span></div>\
+                        template += '<div class="' + this.sanitizeHtml(conditionalClassName) + '">\
+                                        <div class="bu-mb-1"><span class="text-small color-cool-gray-50">#' + this.sanitizeHtml(filteredNotes[i].indicator) + '</span></div>\
                                         <div class="bu-is-flex bu-is-justify-content-space-between graph-notes-tooltip__header">\
                                             <div class="bu-is-flex bu-is-flex-direction-column">\
-                                                <div class="text-small input-owner">' + filteredNotes[i].owner_name + '</div>\
-                                                <div class="text-small color-cool-gray-50 note-date">' + moment.utc(filteredNotes[i].ts).format("MMM D, YYYY hh:mm A") + '</div>\
+                                                <div class="text-small input-owner">' + this.sanitizeHtml(filteredNotes[i].owner_name) + '</div>\
+                                                <div class="text-small color-cool-gray-50 note-date">' + moment(filteredNotes[i].ts).format("MMM D, YYYY hh:mm A") + '</div>\
                                             </div>\
                                             <div class="bu-is-flex bu-is-flex-direction-column bu-is-align-items-flex-end">\
-                                                <span class="text-small color-cool-gray-50 bu-is-capitalized note-type">' + filteredNotes[i].noteType + '</span>\
+                                                <span class="text-small color-cool-gray-50 bu-is-capitalized note-type">' + this.sanitizeHtml(filteredNotes[i].noteType) + '</span>\
                                             </div>\
                                         </div>\
-                                        <div class="bu-mt-2 graph-notes-tooltip__body"><span class="text-small input-notes input-minimizer">' + filteredNotes[i].note + '</span></div>\
+                                        <div class="bu-mt-2 graph-notes-tooltip__body"><span class="text-small input-notes input-minimizer">' + this.sanitizeHtml(filteredNotes[i].note) + '</span></div>\
                                     </div>';
                         if (i === filteredNotes.length) {
                             template = "</div>";
@@ -1107,20 +1144,20 @@
                     }
                 }
                 else {
-                    template += '<div class="' + conditionalClassName + '">\
+                    template += '<div class="' + this.sanitizeHtml(conditionalClassName) + '">\
                                     <div class="bu-is-flex bu-is-justify-content-space-between graph-notes-tooltip__header">\
                                         <div class="bu-is-flex bu-is-flex-direction-column name-wrapper">\
-                                            <div class="text-medium input-owner">' + params.data.note.owner_name + '</div>\
-                                            <div class="text-small color-cool-gray-50 note-date">' + moment.utc(params.data.note.ts).format("MMM D, YYYY hh:mm A") + '</div>\
+                                            <div class="text-medium input-owner">' + this.sanitizeHtml(params.data.note.owner_name) + '</div>\
+                                            <div class="text-small color-cool-gray-50 note-date">' + moment(params.data.note.ts).format("MMM D, YYYY hh:mm A") + '</div>\
                                         </div>\
                                         <div class="bu-is-flex bu-is-flex-direction-column bu-is-align-items-flex-end">\
                                             <span onClick="window.hideGraphTooltip()">\
                                                 <i class="el-icon-close"></i>\
                                             </span>\
-                                            <span class="text-small color-cool-gray-50 bu-is-capitalized note-type">' + params.data.note.noteType + '</span>\
+                                            <span class="text-small color-cool-gray-50 bu-is-capitalized note-type">' + this.sanitizeHtml(params.data.note.noteType) + '</span>\
                                         </div>\
                                     </div>\
-                                    <div class="graph-notes-tooltip__body"><span class="text-medium input-notes">' + params.data.note.note + '</span></div>\
+                                    <div class="graph-notes-tooltip__body"><span class="text-medium input-notes">' + this.sanitizeHtml(params.data.note.note) + '</span></div>\
                                 </div>';
                 }
                 return template;
@@ -1155,7 +1192,7 @@
                     var customPeriodEndDate;
                     if (this.$parent.data.bucket === "daily") {
                         customPeriodStartDate = new Date(xAxisLabels[0]).getTime();
-                        customPeriodEndDate = new Date(xAxisLabels[xAxisLabels.length - 1]).getTime();
+                        customPeriodEndDate = new Date(xAxisLabels[xAxisLabels.length - 1]).setHours(23, 59);
                         filter.customPeriod = [customPeriodStartDate, customPeriodEndDate];
                     }
                     else if (this.$parent.data.bucket === "weekly") {
@@ -1732,6 +1769,10 @@
                 type: String,
                 default: 'line'
             },
+            testId: {
+                required: false,
+                default: 'test-id'
+            }
         },
         mixins: [
             countlyVue.mixins.i18n
@@ -1752,11 +1793,11 @@
                 }
             }
         },
-        template: '<div class="chart-type-toggle-wrapper">\
-                        <el-select v-model="selSwitch" class="chart-type-toggle-wrapper__select">\
-                            <div class="chart-type-toggle-wrapper__title"><span class="text-smaller font-weight-bold bu-is-uppercase">{{i18n("common.chart-type")}}</span></div>\
-                            <el-option value="line" label="Line"><i class="ion-ios-pulse-strong bu-mr-2"></i><span class="chart-type-toggle-wrapper__type">Line Chart</span></el-option>\
-                            <el-option value="bar" label="Bar"><i class="ion-stats-bars bu-mr-3"></i><span class="chart-type-toggle-wrapper__type">Bar</span></el-option>\
+        template: '<div class="chart-type-toggle-wrapper" :data-test-id="testId + \'-chart-type-toggle-wrapper\'">\
+                        <el-select v-model="selSwitch" class="chart-type-toggle-wrapper__select" :test-id="testId">\
+                            <div class="chart-type-toggle-wrapper__title" :data-test-id="testId + \'-chart-type-toggle-wrapper-title\'"><span class="text-smaller font-weight-bold bu-is-uppercase" :data-test-id="testId + \'-chart-type-label\'">{{i18n("common.chart-type")}}</span></div>\
+                            <el-option value="line" label="Line" :data-test-id="testId + \'-chart-type-toggle-wrapper-el-option-line\'"><i class="ion-ios-pulse-strong bu-mr-2"></i><span class="chart-type-toggle-wrapper__type" :data-test-id="testId + \'-chart-type-toggle-wrapper-el-option-line-text\'">Line Chart</span></el-option>\
+                            <el-option value="bar" label="Bar" :data-test-id="testId + \'-chart-type-toggle-wrapper-el-option-bar\'"><i class="ion-stats-bars bu-mr-3"></i><span class="chart-type-toggle-wrapper__type" :data-test-id="testId + \'-chart-type-toggle-wrapper-el-option-bar-text\'">Bar</span></el-option>\
                         </el-select>\
                     </div>'
     });
@@ -1830,9 +1871,20 @@
                 },
             };
         },
+        computed: {
+            hasCreateRight: function() {
+                return countlyAuth.validateCreate("core");
+            },
+            hasUpdateRight: function() {
+                return countlyAuth.validateUpdate("core");
+            }
+        },
         methods: {
             refresh: function() {
                 this.$emit('refresh');
+            },
+            getIconUrl: function(icon) {
+                return `${countlyGlobal.path}/images/annotation/${icon}.svg`;
             }
         },
         components: {
@@ -1842,12 +1894,12 @@
             '<div class="chart-type-annotation-wrapper">\
                 <el-dropdown trigger="click" @command="graphNotesHandleCommand($event)">\
                     <el-button size="small">\
-                        <img src="../images/annotation/notation-icon.svg" class="chart-type-annotation-wrapper__icon"/>\
+                        <img :src="getIconUrl(\'notation-icon\')" class="chart-type-annotation-wrapper__icon"/>\
                     </el-button>\
                     <el-dropdown-menu slot="dropdown">\
-                        <el-dropdown-item command="add"><img src="../images/annotation/add-icon.svg" class="chart-type-annotation-wrapper__img bu-mr-4"/><span>{{i18n("notes.add-note")}}</span></el-dropdown-item>\
-                        <el-dropdown-item command="manage"><img src="../images/annotation/manage-icon.svg" class="chart-type-annotation-wrapper__img bu-mr-4"/>{{i18n("notes.manage-notes")}}</el-dropdown-item>\
-                        <el-dropdown-item command="show"><img src="../images/annotation/show-icon.svg" class="chart-type-annotation-wrapper__img bu-mr-3"/>{{!areNotesHidden ? i18n("notes.hide-notes") : i18n("notes.show-notes")}}</el-dropdown-item>\
+                        <el-dropdown-item v-if="hasCreateRight" command="add"><img :src="getIconUrl(\'add-icon\')" class="chart-type-annotation-wrapper__img bu-mr-4"/><span>{{i18n("notes.add-note")}}</span></el-dropdown-item>\
+                        <el-dropdown-item command="manage"><img :src="getIconUrl(\'manage-icon\')" class="chart-type-annotation-wrapper__img bu-mr-4"/>{{i18n("notes.manage-notes")}}</el-dropdown-item>\
+                        <el-dropdown-item v-if="hasUpdateRight" command="show"><img :src="getIconUrl(\'show-icon\')" class="chart-type-annotation-wrapper__img bu-mr-3"/>{{!areNotesHidden ? i18n("notes.hide-notes") : i18n("notes.show-notes")}}</el-dropdown-item>\
                     </el-dropdown-menu>\
                 </el-dropdown>\
                 <drawer :settings="drawerSettings" :controls="drawers.annotation" @cly-refresh="refresh"></drawer>\
@@ -1883,6 +1935,10 @@
                 default: false,
                 required: false
             },
+            testId: {
+                type: String,
+                default: 'cly-chart-header-test-id',
+            }
         },
         data: function() {
             return {
@@ -1962,7 +2018,7 @@
         template: '<div class="bu-level">\
                         <div class="bu-level-left">\
                             <div class="bu-level-item" v-if="showToggle && !isZoom">\
-                                <chart-toggle :chart-type="chartType" @series-toggle="onSeriesChange" v-on="$listeners"></chart-toggle>\
+                                <chart-toggle :test-id="testId" :chart-type="chartType" @series-toggle="onSeriesChange" v-on="$listeners"></chart-toggle>\
                             </div>\
                             <slot v-if="!isZoom" name="chart-left" v-bind:echart="echartRef"></slot>\
 							<slot name="chart-header-left-input"></slot>\
@@ -1972,9 +2028,9 @@
                             <div class="bu-level-item" v-if="(selectedChartType === \'line\') && (!hideNotation && !isZoom)">\
                                 <add-note :category="this.category" @refresh="refresh"></add-note>\
                             </div>\
-                            <cly-more-options v-if="!isZoom && (showDownload || showZoom)" class="bu-level-item" size="small" @command="handleCommand($event)">\
-                                <el-dropdown-item v-if="showDownload" command="download"><i class="cly-icon-btn cly-icon-download bu-mr-3"></i>Download</el-dropdown-item>\
-                                <el-dropdown-item v-if="showZoom" command="zoom"><i class="cly-icon-btn cly-icon-zoom bu-mr-3"></i>Zoom In</el-dropdown-item>\
+                            <cly-more-options :test-id="testId + \'-cly-chart-more-dropdown\'" v-if="!isZoom && (showDownload || showZoom)" class="bu-level-item" size="small" @command="handleCommand($event)">\
+                                <el-dropdown-item :data-test-id="testId + \'-download-button\'" v-if="showDownload" command="download"><i class="cly-icon-btn cly-icon-download bu-mr-3"></i>Download</el-dropdown-item>\
+                                <el-dropdown-item :data-test-id="testId + \'-more-zoom-button\'" v-if="showZoom" command="zoom"><i class="cly-icon-btn cly-icon-zoom bu-mr-3"></i>Zoom In</el-dropdown-item>\
                             </cly-more-options>\
                             <zoom-interactive @zoom-reset="onZoomReset" :is-zoom="isZoom" @zoom-triggered="onZoomTrigger" ref="zoom" v-if="showZoom" :echartRef="echartRef" class="bu-level-item"></zoom-interactive>\
                         </div>\
@@ -1994,6 +2050,10 @@
             },
             position: {
                 type: String
+            },
+            testId: {
+                type: String,
+                default: "secondary-legend-test-id"
             }
         },
         computed: {
@@ -2039,8 +2099,8 @@
                                 :class="[\'cly-vue-chart-legend__s-series\',\
                                         {\'cly-vue-chart-legend__s-series--deselected\': item.status === \'off\'}]"\
                                 @click="onClick(item, index)">\
-                                <div class="cly-vue-chart-legend__s-rectangle" :style="{backgroundColor: item.displayColor}"></div>\
-                                <div class="cly-vue-chart-legend__s-title has-ellipsis">{{item.label || item.name}}</div>\
+                                <div :data-test-id="testId + \'-legend-icon\'" class="cly-vue-chart-legend__s-rectangle" :style="{backgroundColor: item.displayColor}"></div>\
+                                <div :data-test-id="testId + \'-legend-label\'" class="cly-vue-chart-legend__s-title has-ellipsis">{{item.label || item.name}}</div>\
                                 <div class="cly-vue-chart-legend__s-percentage" v-if="item.percentage">{{item.percentage}}%</div>\
                             </div>\
                         </vue-scroll>\
@@ -2074,7 +2134,8 @@
                                 </div>\
                             </div>\
                             <div class="cly-vue-chart-legend__second-row">\
-                                <div class="cly-vue-chart-legend__p-number">{{item.value}}</div>\
+                                <div class="cly-vue-chart-legend__p-number is-estimate" v-if="item.isEstimate" v-tooltip="item.estimateTooltip">~{{item.value}}</div>\
+                                <div class="cly-vue-chart-legend__p-number" v-else>{{item.value}}</div>\
                                 <div\
                                     :class="[\'cly-vue-chart-legend__p-trend\', \
                                             {\'cly-vue-chart-legend__p-trend--trend-up\': item.trend === \'up\'}, \
@@ -2082,7 +2143,8 @@
                                 >\
                                     <i class="cly-trend-up-icon ion-android-arrow-up" v-if="item.trend === \'up\'"></i>\
                                     <i class="cly-trend-down-icon ion-android-arrow-down" v-if="item.trend === \'down\'"></i>\
-                                    <span v-if="item.percentage">{{item.percentage}}</span>\
+                                    <span v-if="typeof item.percentage === \'number\' && !isNaN(item.percentage)">{{item.percentage}}%</span>\
+                                    <span v-if="typeof item.percentage === \'string\' && item.percentage.length">{{item.percentage}}</span>\
                                 </div>\
                             </div>\
                         </div>\
@@ -2112,6 +2174,10 @@
             seriesType: {
                 type: String,
                 default: ""
+            },
+            testId: {
+                type: String,
+                default: "custom-legend-test-id"
             }
         },
         data: function() {
@@ -2191,6 +2257,9 @@
                             }
                         }
                     }
+                    data.forEach((item) => {
+                        item.name = countlyCommon.unescapeHtml(item.name);
+                    });
                     this.legendData = data;
                 }
             }
@@ -2204,6 +2273,7 @@
                         </template>\
                         <template v-if="options.type === \'secondary\'">\
                             <secondary-legend\
+                                :testId="testId"\
                                 :data="legendData"\
                                 :position="options.position"\
                                 :onClick="onLegendClick">\
@@ -2388,6 +2458,11 @@
                 type: Boolean,
                 default: false,
                 required: false
+            },
+            testId: {
+                type: String,
+                default: 'cly-chart-line-default-test-id',
+                required: false
             }
         },
         template: '<div class="cly-vue-chart" :class="chartClasses" :style="chartStyles">\
@@ -2411,7 +2486,7 @@
                                 @datazoom="onDataZoom">\
                             </echarts>\
                                 <div class="bu-is-flex bu-is-flex-direction-column bu-is-align-items-center" v-if="isChartEmpty && !isLoading">\
-                                    <cly-empty-chart :classes="{\'bu-py-0\': true}"></cly-empty-chart>\
+                                    <cly-empty-chart :test-id="testId" :classes="{\'bu-py-0\': true}"></cly-empty-chart>\
                                 </div>\
                             </div>\
                         </div>\
@@ -2423,7 +2498,6 @@
                         </custom-legend>\
                     </div>'
     }));
-
 
     Vue.component("cly-chart-time", BaseLineChart.extend({
         data: function() {
@@ -2447,6 +2521,16 @@
             hideNotation: {
                 type: Boolean,
                 default: false,
+                required: false
+            },
+            noHourly: {
+                type: Boolean,
+                default: false,
+                required: false
+            },
+            testId: {
+                type: String,
+                default: 'cly-chart-time-default-test-id',
                 required: false
             }
         },
@@ -2480,6 +2564,12 @@
 
                     if (period === "month" && this.category !== "active-users" && !this.bucket) {
                         tickObj = chartsCommon.getTickObj("monthly", false, true);
+                    }
+                    else if (countlyCommon.periodObj.numberOfDays === 1 && this.noHourly) {
+                        tickObj = {
+                            ticks: [[0, countlyCommon.formatDate(moment((countlyCommon.periodObj.activePeriod).replace(/\./g, "/"), "YYYY/MM/DD"), "D MMM")]],
+                            tickTexts: [countlyCommon.formatDate(moment((countlyCommon.periodObj.activePeriod).replace(/\./g, "/"), "YYYY/MM/DD"), "D MMM")]
+                        };
                     }
                     else {
                         tickObj = chartsCommon.getTickObj(this.bucket, false, true);
@@ -2541,7 +2631,7 @@
         },
         template: '<div class="cly-vue-chart" :class="chartClasses" :style="chartStyles">\
                         <div class="cly-vue-chart__echart bu-is-flex bu-is-flex-direction-column bu-is-flex-grow-1 bu-is-flex-shrink-1" style="min-height: 0">\
-                            <chart-header ref="header" :category="this.category" :hide-notation="this.hideNotation" v-if="!isChartEmpty" @series-toggle="onSeriesChange" :show-zoom="showZoom" :show-toggle="showToggle" :show-download="showDownload" @graph-notes-refresh="refresh" @notes-visibility="notesVisibility">\
+                        <chart-header :test-id="testId + \'-header\'" ref="header" :category="this.category" :hide-notation="this.hideNotation" v-if="!isChartEmpty" @series-toggle="onSeriesChange" :show-zoom="showZoom" :show-toggle="showToggle" :show-download="showDownload" @graph-notes-refresh="refresh" @notes-visibility="notesVisibility">\
                                 <template v-for="item in forwardedSlots" v-slot:[item]="slotScope">\
                                     <slot :name="item" v-bind="slotScope"></slot>\
                                 </template>\
@@ -2558,7 +2648,7 @@
                                     :autoresize="autoresize"\
                                     @datazoom="onDataZoom"/>\
                                 <div class="bu-is-flex bu-is-flex-direction-column bu-is-align-items-center" v-if="isChartEmpty && !isLoading">\
-                                    <cly-empty-chart :classes="{\'bu-py-0\': true}"></cly-empty-chart>\
+                                    <cly-empty-chart :test-id="testId" :classes="{\'bu-py-0\': true}"></cly-empty-chart>\
                                 </div>\
                             </div>\
                         </div>\
@@ -2580,6 +2670,18 @@
                 forwardedSlots: ["chart-left", "chart-right"]
             };
         },
+        props: {
+            patchXAxis: {
+                type: Boolean,
+                default: true,
+                required: false
+            },
+            testId: {
+                type: String,
+                default: "cly-chart-bar-test-id",
+                required: false
+            }
+        },
         components: {
             'chart-header': ChartHeader,
             'custom-legend': CustomLegend
@@ -2588,13 +2690,15 @@
             chartOptions: function() {
                 var opt = _mergeWith({}, this.mergedOptions);
                 opt = this.patchChart(opt);
-                opt = this.patchOptionsForXAxis(opt);
+                if (this.patchXAxis) {
+                    opt = this.patchOptionsForXAxis(opt);
+                }
                 return opt;
             }
         },
         template: '<div class="cly-vue-chart" :class="chartClasses" :style="chartStyles">\
                         <div class="cly-vue-chart__echart bu-is-flex bu-is-flex-direction-column bu-is-flex-grow-1 bu-is-flex-shrink-1" style="min-height: 0">\
-                            <chart-header :chart-type="\'bar\'" ref="header" v-if="!isChartEmpty" @series-toggle="onSeriesChange" :show-zoom="showZoom" :show-toggle="showToggle" :show-download="showDownload">\
+                            <chart-header :chart-type="\'bar\'" ref="header" v-if="!isChartEmpty" :test-id="testId" @series-toggle="onSeriesChange" :show-zoom="showZoom" :show-toggle="showToggle" :show-download="showDownload">\
                                 <template v-for="item in forwardedSlots" v-slot:[item]="slotScope">\
                                     <slot :name="item" v-bind="slotScope"></slot>\
                                 </template>\
@@ -2612,7 +2716,7 @@
                                     @datazoom="onDataZoom">\
                                 </echarts>\
                                 <div class="bu-is-flex bu-is-flex-direction-column bu-is-align-items-center" v-if="isChartEmpty && !isLoading">\
-                                    <cly-empty-chart :classes="{\'bu-py-0\': true}"></cly-empty-chart>\
+                                    <cly-empty-chart :test-id="testId" :classes="{\'bu-py-0\': true}"></cly-empty-chart>\
                                 </div>\
                             </div>\
                         </div>\
@@ -2620,6 +2724,7 @@
                             ref="legend"\
                             :options="legendOptions"\
                             :seriesType="seriesType"\
+                            :testId="testId"\
                             v-if="legendOptions.show && !isChartEmpty">\
                         </custom-legend>\
                     </div>'
@@ -2630,6 +2735,13 @@
             return {
                 forwardedSlots: ["chart-left", "chart-right"]
             };
+        },
+        props: {
+            testId: {
+                type: String,
+                default: "cly-chart-pie-test-id",
+                required: false
+            }
         },
         components: {
             'chart-header': ChartHeader,
@@ -2668,7 +2780,7 @@
         },
         template: '<div class="cly-vue-chart" :class="chartClasses" :style="chartStyles">\
                         <div class="cly-vue-chart__echart bu-is-flex bu-is-flex-direction-column bu-is-flex-grow-1" style="height: 100%">\
-                            <chart-header ref="header" :chart-type="\'pie\'" v-if="!isChartEmpty" @series-toggle="onSeriesChange" :show-zoom="showZoom" :show-toggle="showToggle" :show-download="showDownload">\
+                            <chart-header ref="header" :chart-type="\'pie\'" v-if="!isChartEmpty" :test-id="testId" @series-toggle="onSeriesChange" :show-zoom="showZoom" :show-toggle="showToggle" :show-download="showDownload">\
                                 <template v-for="item in forwardedSlots" v-slot:[item]="slotScope">\
                                     <slot :name="item" v-bind="slotScope"></slot>\
                                 </template>\
@@ -2701,7 +2813,7 @@
 									</div>\
 								</div>\
                                 <div class="bu-column bu-is-flex-direction-column bu-is-align-items-center" v-if="isChartEmpty && !isLoading">\
-                                    <cly-empty-chart :classes="{\'bu-py-0\': true}"></cly-empty-chart>\
+                                    <cly-empty-chart :test-id="testId" :classes="{\'bu-py-0\': true}"></cly-empty-chart>\
                                 </div>\
                             </div>\
                         </div>\
@@ -2750,7 +2862,7 @@
                 tileFeed: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
                 tileAttribution: '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors',
                 markerIcon: L.icon({
-                    iconUrl: '/images/leaflet/marker-icon.svg',
+                    iconUrl: 'images/leaflet/marker-icon.svg',
                     iconSize: [32, 32],
                     iconAnchor: [ 16, 32],
                 }),
@@ -2975,6 +3087,10 @@
             showTooltip: {
                 type: Boolean,
                 default: true
+            },
+            blockAutoLoading: {
+                type: Boolean,
+                default: false
             }
         },
         beforeCreate: function() {
@@ -3070,7 +3186,7 @@
         },
         computed: {
             loading: function() {
-                return this.loadingGeojson || this.loadingCities;
+                return !this.blockAutoLoading && (this.loadingGeojson || this.loadingCities);
             },
             inDetail: function() {
                 return this.country !== null;
@@ -3264,7 +3380,7 @@
                     return false;
                 }
                 else {
-                    return "/images/flags/" + code.toLowerCase() + ".png";
+                    return "images/flags/" + code.toLowerCase() + ".png";
                 }
             },
             getMarkerTooltipTitle: function(code) {
@@ -3290,10 +3406,10 @@
                 var self = this;
                 this.loadingGeojson = true;
 
-                var url = '/geodata/world.geojson';
+                var url = 'geodata/world.geojson';
 
                 if (country) {
-                    url = '/geodata/region/' + country + '.geojson';
+                    url = 'geodata/region/' + country + '.geojson';
                 }
 
                 return CV.$.ajax({

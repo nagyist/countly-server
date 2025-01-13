@@ -1,4 +1,21 @@
 const moment = require("moment");
+
+const internalEventsEnum =
+{
+    "[CLY]_session": "s",
+    "[CLY]_view": "v",
+    "[CLY]_nps": "n",
+    "[CLY]_crash": "c",
+    "[CLY]_action": "ac",
+    "[CLY]_survey": "srv",
+    "[CLY]_star_rating": "str",
+    "[CLY]_apm_device": "apm",
+    "[CLY]_apm_network": "apm",
+    "[CLY]_push_action": "p",
+    "[CLY]_push_sent": "ps",
+    "[CLY]_consent": "cs",
+};
+
 /**
 * Saves session and event count information to server_stats_data_points
 * collection in countly database
@@ -28,16 +45,26 @@ function updateDataPoints(writeBatcher, appId, sessionCount, eventCount, consoli
         s: sessionCount,
         [`d.${utcMoment.format("D")}.${utcMoment.format("H")}.s`]: sessionCount
     };
-    if (typeof eventCount === 'object') {
+    if (typeof eventCount === 'object' && Object.keys(eventCount).length) {
         var sum = sessionCount || 0;
         for (var key in eventCount) {
             incObject[key] = eventCount[key];
             incObject[`d.${utcMoment.format("D")}.${utcMoment.format("H")}.${key}`] = eventCount[key];
-            sum += eventCount[key] || 0;
+            // sum += eventCount[key] || 0;
+            if (key === "e" || key === "s" || key === "p") { //because other are breakdowns from events.
+                sum += eventCount[key] || 0;
+            }
         }
         incObject[`d.${utcMoment.format("D")}.${utcMoment.format("H")}.dp`] = sum;
     }
-    else {
+    else if (sessionCount && (eventCount === null || typeof eventCount === 'undefined' || (typeof eventCount === 'object' && !Object.keys(eventCount).length))) {
+        incObject = {
+            s: sessionCount,
+            [`d.${utcMoment.format("D")}.${utcMoment.format("H")}.s`]: sessionCount,
+            [`d.${utcMoment.format("D")}.${utcMoment.format("H")}.dp`]: sessionCount
+        };
+    }
+    else if (typeof eventCount === 'number') {
         incObject = {
             e: eventCount,
             s: sessionCount,
@@ -89,6 +116,14 @@ function increaseDataPoints(object, data) {
     object.events += (data.e || 0);
     object.sessions += (data.s || 0);
     object.push += (data.p || 0);
+    object.crash += (data.c || 0);
+    object.views += (data.v || 0);
+    object.actions += (data.ac || 0);
+    object.nps += (data.n || 0);
+    object.surveys += (data.srv || 0);
+    object.ratings += (data.str || 0);
+    object.apm += (data.apm || 0);
+    object.custom += (data.ce || 0);
     if (data.dp) {
         object.dp += data.dp;
     }
@@ -191,6 +226,8 @@ function punchCard(db, filter, options) {
  *  @param {db} db - database object
  *  @param {object} filter - to filter documents
  *  @param {object} options - array with periods
+ *  @param {boolean} options.monthlyBreakdown - if true, will calculate monthly data points breakdown for all apps (used to get license metric)
+ *  @param {string} options.license_hosting - client hosting type, could be countly hosted or self hosted. This will determine how consolidated data points should be added to total data points
  *  @param {function} callback - callback
  */
 function fetchDatapoints(db, filter, options, callback) {
@@ -198,7 +235,7 @@ function fetchDatapoints(db, filter, options, callback) {
     options.dateObjPrev = options.dateObjPrev || {};
     db.collection("server_stats_data_points").find(filter, {}).toArray(function(err, result) {
         var toReturn = {
-            "all-apps": {"events": 0, "sessions": 0, "push": 0, "dp": 0, "change": 0},
+            "all-apps": {"events": 0, "sessions": 0, "push": 0, "dp": 0, "change": 0, "crash": 0, "views": 0, "actions": 0, "nps": 0, "surveys": 0, "ratings": 0, "apm": 0, "custom": 0},
         };
 
         if (err || !result) {
@@ -206,9 +243,38 @@ function fetchDatapoints(db, filter, options, callback) {
             return callback(toReturn);
         }
 
+        if (options.monthlyBreakdown) {
+            const dataPoints = result
+                .reduce((acc, current) => {
+                    let dp = (current.e || 0) + (current.s || 0);
+
+                    if (/^\[CLY\]_consolidated/.test(current._id)) {
+                        // do not count consolidated dp for countly hosted clients
+                        if (options.license_hosting === 'Countly-Hosted') {
+                            dp = 0;
+                        }
+                        // subtract consolidated dp for self hosted clients to get natural dp
+                        else {
+                            dp *= -1;
+                        }
+                    }
+
+                    if (current.m in acc) {
+                        acc[current.m] += dp;
+                    }
+                    else {
+                        acc[current.m] = dp;
+                    }
+
+                    return acc;
+                }, {});
+
+            return callback(dataPoints);
+        }
+
         for (let i = 0; i < result.length; i++) {
             if (!toReturn[result[i].a]) {
-                toReturn[result[i].a] = {"events": 0, "push": 0, "sessions": 0, "dp": 0, "change": 0};
+                toReturn[result[i].a] = {"events": 0, "sessions": 0, "push": 0, "dp": 0, "change": 0, "crash": 0, "views": 0, "actions": 0, "nps": 0, "surveys": 0, "ratings": 0, "apm": 0, "custom": 0};
             }
             const dates = result[i].d;
             if (options.dateObj[result[i].m]) {
@@ -253,6 +319,14 @@ function fetchDatapoints(db, filter, options, callback) {
 
             }
 
+        }
+        if (toReturn["[CLY]_consolidated"] && toReturn["all-apps"]) {
+            //Calculate all-apps data without [CLY]_consolidated data to remove duplication
+            for (let metric in toReturn["all-apps"]) {
+                if (toReturn["[CLY]_consolidated"] && toReturn["[CLY]_consolidated"][metric]) {
+                    toReturn["all-apps"][metric] -= toReturn["[CLY]_consolidated"][metric];
+                }
+            }
         }
         if (!options.singleApp && toReturn["[CLY]_consolidated"] && toReturn["all-apps"]) {
             //if we have consolidated data, calculate all data without consolidated data
@@ -340,4 +414,5 @@ function getAppName(appId, appNames) {
     }
 }
 
-module.exports = {updateDataPoints, isConsolidated, increaseDataPoints, punchCard, fetchDatapoints, getTop, getAppName};
+
+module.exports = {updateDataPoints, isConsolidated, increaseDataPoints, punchCard, fetchDatapoints, getTop, getAppName, internalEventsEnum};

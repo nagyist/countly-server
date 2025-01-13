@@ -6,7 +6,10 @@
             <div>
                 <cly-back-link link="/manage/data-manager/events/events" title="Back to Manage Events"></cly-back-link>
                 <div class="bu-mt-4">
-                    <h3 class="bu-is-capitalized"> {{event.name || event.key}} </h3>
+                    <div class="bu-is-flex bu-is-align-items-center">
+                        <h3 class="bu-is-capitalized bu-mr-2">{{unescapeHtml(event.name || event.key)}}</h3>
+                        <cly-guide></cly-guide>
+                    </div>
                     <div class="bu-mt-4 bu-mr-2">
                         <span v-if="isDrill" class="tag-container">
                             <span v-bind:class="statusClassObject(event.status)" class="bu-tag bu-mt-1"> 
@@ -62,22 +65,22 @@
                             <tr>
                                 <td><span>{{i18n('data-manager.events.key')}}</span>
                                 </td>
-                                <td>{{event.key}}</td>
+                                <td>{{unescapeHtml(event.key)}}</td>
                             </tr>
                             <tr>
                                 <td><span>{{i18n('data-manager.event-name')}}</span>
                                 </td>
-                                <td>{{event.name}}</td>
+                                <td>{{unescapeHtml(event.name)}}</td>
                             </tr>
                             <tr>
                                 <td><span>{{i18n('data-manager.description')}}</span>
                                 </td>
-                                <td v-html="event.description || '-' "></td>
+                                <td>{{unescapeHtml(event.description || '-')}}</td>
                             </tr>
                             <tr>
                                 <td><span>{{i18n('data-manager.category')}}</span>
                                 </td>
-                                <td>{{categoriesMap[event.category] || i18n('data-manager.uncategorized') }}</td>
+                                <td>{{unescapeHtml(categoriesMap[event.category] || i18n('data-manager.uncategorized'))}}</td>
                             </tr>
                             <tr>
                                 <td><span>{{i18n('data-manager.first-triggered')}}</span>
@@ -91,6 +94,9 @@
         </div>
     </cly-section>
 
+    <div v-if="isLoading" v-loading="isLoading" class="bu-mx-5" style="height: 300px;">
+        <h4>{{i18n('data-manager.event-segmentation')}}</h4>
+    </div>
     <cly-section class="bu-mx-5" v-if="isDrill && segments.length > 0">
         <template v-slot:header>
             <h4>{{i18n('data-manager.event-segmentation')}}</h4>
@@ -103,12 +109,12 @@
             <template v-slot="scope">
                 <el-table-column :label="i18n('data-manager.segment-name')" sortable="custom" prop="name">
                     <template v-slot="rowScope">
-                        {{rowScope.row.name}}
+                        <div>{{unescapeHtml(rowScope.row.name)}}</div>
                     </template>
                 </el-table-column>
                 <el-table-column :label="i18n('data-manager.description')">
                     <template v-slot="rowScope">
-                        {{rowScope.row.description}}
+                        <div>{{unescapeHtml(rowScope.row.description)}}</div>
                     </template>
                 </el-table-column>
                 <el-table-column :label="i18n('data-manager.status')" sortable="custom" prop="status">
@@ -129,7 +135,7 @@
                         </div>
                     </template>
                 </el-table-column>
-                <el-table-column type="options" width="90px" align="center">
+                <el-table-column v-if="canUserUpdate" type="options" width="90px" align="center">
                     <template v-slot="rowScope">
                         <el-button v-if="rowScope.row.hover" @click="handleEditSegment(rowScope.row)" size="small">Edit</el-button>
                     </template>

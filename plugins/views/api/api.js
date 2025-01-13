@@ -10,8 +10,9 @@ var pluginOb = {},
     log = common.log('views:api'),
     { validateRead, validateUpdate, validateDelete } = require('../../../api/utils/rights.js');
 
+const viewsUtils = require("./parts/viewsUtils.js");
 const FEATURE_NAME = 'views';
-const escapedViewSegments = { "name": true, "segment": true, "height": true, "width": true, "y": true, "x": true, "visit": true, "uvc": true, "start": true, "bounce": true, "exit": true, "type": true, "view": true, "domain": true, "dur": true, "_id": true, "_idv": true};
+const escapedViewSegments = { "name": true, "segment": true, "height": true, "width": true, "y": true, "x": true, "visit": true, "uvc": true, "start": true, "bounce": true, "exit": true, "type": true, "view": true, "domain": true, "dur": true, "_id": true, "_idv": true, "utm_source": true, "utm_medium": true, "utm_campaign": true, "utm_term": true, "utm_content": true, "referrer": true};
 //keys to not use as segmentation
 (function() {
     plugins.register("/permissions/features", function(ob) {
@@ -20,7 +21,7 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
 
     plugins.setConfigs("views", {
         view_limit: 50000,
-        view_name_limit: 100,
+        view_name_limit: 128,
         segment_value_limit: 10,
         segment_limit: 100
     });
@@ -30,6 +31,13 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
 
     plugins.register("/worker", function() {
         common.dbUniqueMap.users.push("vc");
+    });
+
+    plugins.register("/master", function() {
+        // Allow configs to load & scanner to find all jobs classes
+        setTimeout(() => {
+            require('../../../api/parts/jobs').job('views:cleanupMeta')?.replace()?.schedule("every 1 day");
+        }, 3000);
     });
 
     plugins.register("/i/user_merge", function(ob) {
@@ -170,11 +178,70 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                     });
                 });
             }
+            else if (ob.params.qstring.method === "omit_segments") {
+                validateDelete(ob.params, FEATURE_NAME, function(params) {
+                    if (!params.qstring.app_id) {
+                        common.returnMessage(params, 400, 'Missing request parameter: app_id');
+                        resolve();
+                        return;
+                    }
+                    if (params.qstring.omit_list) {
+                        var omit = [];
+                        try {
+                            omit = JSON.parse(ob.params.qstring.omit_list);
+                        }
+                        catch (SyntaxError) {
+                            log.e('Parsing data failed: ', ob.params.qstring.omit_list);
+                            common.returnMessage(params, 400, 'Cannot parse  parameter: omit_list');
+                            resolve();
+                            return;
+                        }
+                        if (!Array.isArray(omit)) {
+                            common.returnMessage(params, 400, 'Invalid request parameter: omit_list');
+                            resolve();
+                            return;
+                        }
+
+                        viewsUtils.ommit_segments({params: params, db: common.db, omit: omit, appId: params.qstring.app_id}, function(err) {
+                            if (err) {
+                                common.returnMessage(params, 400, "Updating database failed");
+                            }
+                            else {
+                                common.returnMessage(params, 200, 'Success');
+                            }
+                            resolve();
+                            return;
+                        });
+                    }
+                    else {
+                        common.returnMessage(params, 400, 'Nothing is passed for omiting');
+                    }
+                });
+            }
             else {
-                common.returnMessage(ob.params, 400, 'Invalid method. Must be one of:delete_view,rename_views ');
+                common.returnMessage(ob.params, 400, 'Invalid method. Must be one of:delete_view,rename_views,omit_segments ');
                 resolve();
             }
         });
+    });
+
+    plugins.register("/batcher/fail", function(ob) {
+        if (ob.db === "countly" && (ob.collection.indexOf("app_viewdata") === 0)) {
+            //omit segment using app_id and segment name
+            if (ob.data && ob.data.updateOne && ob.data.updateOne.update && ob.data.updateOne.update.$set) {
+                var appId = ob.data.updateOne.update.$set.a;
+                var segment = ob.data.updateOne.update.$set.s;
+                if (appId && segment) {
+                    log.d("calling segment omiting for " + appId + " - " + segment);
+                    viewsUtils.ommit_segments({extend: true, db: common.db, omit: [segment], appId: appId, params: {"qstring": {}, "user": {"_id": "SYSTEM", "username": "SYSTEM"}}}, function(err) {
+                        if (err) {
+                            log.e(err);
+                        }
+                    });
+                }
+
+            }
+        }
     });
 
     plugins.register("/i/device_id", function(ob) {
@@ -182,38 +249,48 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
         var oldUid = ob.oldUser.uid;
         var newUid = ob.newUser.uid;
         if (oldUid !== newUid) {
-            common.db.collection("app_userviews" + appId).find({_id: oldUid}).toArray(function(err, data) {
-                const bulk = common.db.collection("app_userviews" + appId).initializeUnorderedBulkOp();
-                var haveUpdate = false;
-                for (var k in data) {
-                    for (var view in data[k]) {
-                        if (view !== '_id') {
-                            if (data[k][view].ts) {
-                                let orRule = {};
-                                orRule[view + ".ts"] = {$lt: data[k][view].ts};
-                                let orRule2 = {};
-                                orRule2[view] = {$exists: false};
-                                let setRule = {};
-                                setRule[view + ".ts"] = data[k][view].ts;
-                                if (data[k][view].lvid) {
-                                    setRule[view + ".lvid"] = data[k][view].lvid;
+            return new Promise(function(resolve, reject) {
+                common.db.collection("app_userviews" + appId).find({_id: oldUid}).toArray(function(err, data) {
+                    if (err) {
+                        log.e(err);
+                        reject(err);
+                        return;
+                    }
+                    const bulk = common.db.collection("app_userviews" + appId).initializeUnorderedBulkOp();
+                    var haveUpdate = false;
+                    for (var k in data) {
+                        for (var view in data[k]) {
+                            if (view !== '_id') {
+                                if (data[k][view].ts) {
+                                    let orRule = {};
+                                    orRule[view + ".ts"] = {$lt: data[k][view].ts};
+                                    let orRule2 = {};
+                                    orRule2[view] = {$exists: false};
+                                    let setRule = {};
+                                    setRule[view + ".ts"] = data[k][view].ts;
+                                    if (data[k][view].lvid) {
+                                        setRule[view + ".lvid"] = data[k][view].lvid;
+                                    }
+                                    if (data[k][view].sg) {
+                                        setRule[view + ".sg"] = data[k][view].sg;
+                                    }
+                                    bulk.find({$and: [{_id: newUid}, {$or: [orRule, orRule2]}]}).upsert().updateOne({$set: setRule});
+                                    haveUpdate = true;
                                 }
-                                bulk.find({$and: [{_id: newUid}, {$or: [orRule, orRule2]}]}).upsert().updateOne({$set: setRule});
-                                haveUpdate = true;
                             }
                         }
                     }
-                }
-                if (haveUpdate) {
-
-                    bulk.execute().catch(function(err1) {
-                        if (parseInt(err1.code) !== 11000) {
-                            log.e(err1);
-                        }
+                    if (haveUpdate) {
+                        bulk.execute().catch(function(err1) {
+                            if (parseInt(err1.code) !== 11000) {
+                                log.e(err1);
+                            }
+                        });
+                    }
+                    common.db.collection("app_userviews" + appId).remove({_id: oldUid}, function(/*err, res*/) {
+                        resolve();
                     });
-
-                }
-                common.db.collection("app_userviews" + appId).remove({_id: oldUid}, function(/*err, res*/) {});
+                });
             });
         }
     });
@@ -239,6 +316,36 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
         });
     });
 
+    /* Function for future use to use ugroups instead of usual method. Needs to be rechecked for agregation pipeline speed
+    function getUvalueSelectFromMap(map, segmentVal) {
+        var groups = {};
+        for (var year in map) {
+            let yy = year + ":0";
+            groups[yy] = [];
+            groups[yy].push({"k": yy, "v": "$d." + year + "." + segmentVal + "u"});
+            if (Object.keys(map[year]).length > 0) { //we need also monthly doc for those
+                for (var month in map[year]) {
+                    let mm = year + ":" + month;
+                    groups[mm] = [];
+                    groups[mm].push({"k": mm, "v": "$d." + mm + "." + segmentVal + "u"});
+                    if (Object.keys(map[year][month]).length > 0) { //we need also weekly doc for those
+                        for (var week in map[year][month]) {
+                            let ww = year + ":" + week;
+                            groups[yy].push({"k": ww, "v": "$d." + week + "." + segmentVal + "u"});
+
+                            for (var day in map[year][month][week]) {
+                                let dd = year + ":" + month + ":" + day;
+                                groups[mm].push(mm + "." + dd + "." + segmentVal + "u");
+                                groups[mm].push({"k": dd, "v": "$d." + month + "." + day + "." + segmentVal + "u"});
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return groups;
+    }
+    */
     /** function returns aggregation pipeline
      * @param {object} params  -  params object(passed from request).
      * @param {string} params.qstring.app_id - app id
@@ -251,7 +358,9 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
         settings = settings || {};
         var pipeline = [];
         var period = params.qstring.period || '30days';
-
+        if (params.qstring.period && params.qstring.period.indexOf('since') !== -1) {
+            params.qstring.period = JSON.parse(params.qstring.period);
+        }
         var dates = [];
         var calcUvalue = [];
         var calcUvalue2 = [];
@@ -308,6 +417,25 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
         var last_pushed = "";
         var selectMap = {};
         var projector;
+        var parsedPeriod = period;
+        var periodsToBeConverted = ["months", "weeks", "days"];
+
+        if (typeof period === 'string') {
+            try {
+                parsedPeriod = JSON.parse(period);
+            }
+            catch (error) {
+                parsedPeriod = period;
+            }
+        }
+        if ((typeof parsedPeriod === 'object' && Object.prototype.hasOwnProperty.call(parsedPeriod, 'since')) || periodsToBeConverted.some(x=>period.includes(x))) {
+            try {
+                period = JSON.stringify([periodObj.start, periodObj.end]);
+            }
+            catch (error) {
+                //
+            }
+        }
 
         if (/([0-9]+)days/.test(period)) {
             //find out month documents
@@ -334,7 +462,8 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                 "_id": "$vw"
             };
 
-            if (u0) {
+            var u0keys = Object.keys(u0);
+            if (u0keys.length > 0) {
                 calcUvalue.push('$uvalue0');
                 var branches0 = [];
                 for (let i in u0) {
@@ -343,7 +472,8 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                 projector.uvalue0 = {$sum: {$switch: {branches: branches0, default: 0}}};
             }
 
-            if (u1) {
+            var u1keys = Object.keys(u1);
+            if (u1keys.length > 0) {
                 calcUvalue2.push('$uvalue1');
                 var branches1 = [];
                 for (let i in u1) {
@@ -414,6 +544,27 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
             }
             pipeline.push({$group: groupBy0});
         }
+        else if (period === "prevMonth") { //previous month
+            var prevmonth = now.format('YYYY:M'); //because now is set as end of last month
+            var monthNumber2 = prevmonth.split(':');
+            thisYear = now.format('YYYY');
+            pipeline.push({$match: {'_id': {$regex: ".*_" + thisYear + ":0$"}}});
+            if (settings && settings.onlyIDs) {
+                pipeline.push({$match: {'vw': {'$in': settings.onlyIDs}}});
+            }
+
+            groupBy0 = {_id: "$vw"};
+            for (let i = 0; i < settings.levels.daily.length; i++) {
+                if (settings.levels.daily[i] !== 'u') {
+                    groupBy0[settings.levels.daily[i]] = {$sum: '$d.' + monthNumber2[1] + '.' + segment + settings.levels.daily[i]};
+                }
+                else {
+                    groupBy0.uvalue = {$sum: '$d.' + monthNumber2[1] + '.' + segment + settings.levels.daily[i]};
+                    groupBy0.u = {$sum: '$d.' + monthNumber2[1] + '.' + segment + settings.levels.daily[i]};
+                }
+            }
+            pipeline.push({$group: groupBy0});
+        }
         else if (period === "yesterday" || period === "hour" || (periodObj.activePeriod && (periodObj.end + 1000 - periodObj.start) === 1000 * 60 * 60 * 24)) { //previous day or this day or day in any other time
             var this_date = periodObj.activePeriod.split(".");
             curmonth = this_date[0] + ":" + this_date[1];
@@ -437,6 +588,8 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
             var lastMonth = now.format('YYYY:M');
             var u00 = createUvalues(periodObj.uniquePeriodArr, segment);
             var u10 = createUvalues(periodObj.uniquePeriodCheckArr, segment);
+
+            //var ugroups = getUvalueSelectFromMap(periodObj.uniqueMap,segment);
 
             month_array = [];
             last_pushed = "";
@@ -475,7 +628,15 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
             }
 
             projector = {_id: "$vw"};
-            if (u00) {
+            /* Code for using ugroups in period object
+            if(ugroups){
+                var branches00 = [];
+                for(let i in ugroups){
+                    branches00.push({ case: { $eq: [ "$m", i ] }, then: {$push: u00[i]}});
+                }
+            }*/
+            var u00keys = Object.keys(u00);
+            if (u00keys.length > 0) {
                 calcUvalue.push('$uvalue0');
                 var branches00 = [];
                 for (let i in u00) {
@@ -483,8 +644,8 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                 }
                 projector.uvalue0 = {$sum: {$switch: {branches: branches00, default: 0}}};
             }
-
-            if (u10) {
+            var u10keys = Object.keys(u10);
+            if (u10keys.length > 0) {
                 calcUvalue2.push('$uvalue1');
                 var branches01 = [];
                 for (let i in u10) {
@@ -517,6 +678,7 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                 pipeline.push({$match: {'vw': {'$in': settings.onlyIDs}}});
             }
             pipeline.push({$group: projector});
+            pipeline.push({"$addFields": {"uvalue": {"$min": ["$u", {"$max": ["$t", "$n"]}]}}});
 
         }
 
@@ -564,7 +726,6 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
         if (settings.depends) {
             pipeline.push({"$match": settings.depends}); //filter only those which has some value in choosen column
         }
-
         var facetLine = [];
 
         if (settings.sortcol !== 'name') {
@@ -1149,6 +1310,9 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                             res1.segments[k] = Object.keys(res1.segments[k]) || [];
                         }
                     }
+                    if (res1 && res1.omit) {
+                        res.omit = res1.omit;
+                    }
                     if (common.drillDb) {
                         var collectionName = "drill_events" + crypto.createHash('sha1').update("[CLY]_action" + params.qstring.app_id).digest('hex');
                         common.drillDb.collection(collectionName).findOne({"_id": "meta_v2"}, {_id: 0, "sg.domain": 1}, function(err3, meta1) {
@@ -1462,6 +1626,9 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                                 options.upsert = false;
                             }
                             common.db.collection(collection).findAndModify(query, {}, update, options, function(err2, view2) {
+                                if (err2) {
+                                    log.e(err);
+                                }
                                 if (view2 && view2.value) {
                                     callback(err, view2.value);
                                     common.readBatcher.invalidate(collection, query, {}, false);
@@ -1485,6 +1652,9 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                         options.upsert = false;
                     }
                     common.db.collection(collection).findAndModify(query, {}, update, options, function(err, view) {
+                        if (err) {
+                            log.e(err);
+                        }
                         if (view && view.value) {
                             callback(err, view.value);
                         }
@@ -1501,7 +1671,7 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
             }
         }
     }
-    plugins.register("/session/post", function(ob) {
+    plugins.register("/session/post", async function(ob) {
         var params = ob.params;
         var user = params.app_user;
         if (user && user.vc) {
@@ -1541,45 +1711,66 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
             var update = {'$inc': updateUsersZero, '$set': {}};
             update.$set['meta_v2.v-ranges.' + calculatedRange] = true;
             common.writeBatcher.add('users', params.app_id + "_" + dbDateIds.zero + "_" + postfix, update);
-
-            if (user.lv) {
-                var segmentation = {name: user.lv, exit: 1};
-                getViewNameObject(params, 'app_viewsmeta' + params.app_id, {'view': segmentation.name}, {$set: {'view': segmentation.name}}, {upsert: true, new: true}, function(err, view) {
+            await new Promise(function(resolve) {
+                common.db.collection("app_userviews" + params.app_id).find({_id: user.uid}).toArray(function(err, data) {
                     if (err) {
                         log.e(err);
                     }
-                    if (view) {
-                        if (parseInt(user.vc) === 1) {
-                            segmentation.bounce = 1;
-                        }
-                        params.viewsNamingMap = params.viewsNamingMap || {};
-                        params.viewsNamingMap[segmentation.name] = view._id;
-                        recordMetrics(params, {"viewAlias": view._id, key: "[CLY]_view", segmentation: segmentation}, user);
-
-                        if (segmentation.exit || segmentation.bounce) {
-                            plugins.dispatch("/view/duration", {params: params, updateMultiViewParams: {exit: segmentation.exit, bounce: segmentation.bounce}, viewName: view._id});
+                    data = data || [];
+                    data = data[0] || {};
+                    for (var vw in data) {
+                        if (vw !== "_id") {
+                            if (data[vw].ts >= user.ls) {
+                                var sg = {'uvc': 1};
+                                for (var key0 in (data[vw].sg || {})) {
+                                    if (key0 === 'platform' || !escapedViewSegments[key0]) {
+                                        sg[key0] = data[vw].sg[key0];
+                                    }
+                                }
+                                recordMetrics(params, {"viewAlias": vw, key: "[CLY]_view", segmentation: sg}, user);
+                            }
                         }
                     }
+                    if (user.lv) {
+                        var segmentation = {name: user.lv, exit: 1};
+
+                        getViewNameObject(params, 'app_viewsmeta' + params.app_id, {'view': segmentation.name}, {$set: {'view': segmentation.name}}, {upsert: true, new: true}, function(err5, view) {
+                            if (err5) {
+                                log.e(err5);
+                            }
+                            if (view) {
+                                if (data[(view._id + "")] && data[(view._id + "")].sg) {
+                                    for (var key in data[(view._id + "")].sg) {
+                                        if (key === 'platform' || !escapedViewSegments[key]) {
+                                            segmentation[key] = data[(view._id + "")].sg[key];
+                                        }
+                                    }
+
+                                }
+                                if (parseInt(user.vc) === 1) {
+                                    segmentation.bounce = 1;
+                                }
+                                params.viewsNamingMap = params.viewsNamingMap || {};
+                                params.viewsNamingMap[segmentation.name] = view._id;
+                                recordMetrics(params, {"viewAlias": view._id, key: "[CLY]_view", segmentation: segmentation}, user);
+
+                                if (segmentation.exit || segmentation.bounce) {
+                                    plugins.dispatch("/view/duration", {params: params, updateMultiViewParams: {exit: segmentation.exit, bounce: segmentation.bounce}, viewName: view._id});
+                                }
+                            }
+                            checkViewQuery(ob.updates, 0, 0);
+                            resolve();
+                        });
+
+                    }
+                    else {
+                        checkViewQuery(ob.updates, 0, 0);
+                        resolve();
+                    }
+
+                    //update unique view vount for session
+
                 });
-            }
-            checkViewQuery(ob.updates, 0, 0);
-            //update unique view vount for session
-            common.db.collection("app_userviews" + params.app_id).find({_id: user.uid}).toArray(function(err, data) {
-                if (err) {
-                    log.e(err);
-                }
-                data = data || [];
-                data = data[0] || {};
-
-                for (var key in data) {
-                    if (key !== "_id") {
-                        if (data[key].ts >= user.ls) {
-                            recordMetrics(params, {"viewAlias": key, key: "[CLY]_view", segmentation: {"uvc": 1}}, user);
-                        }
-                    }
-                }
-
-
             });
         }
     });
@@ -1608,12 +1799,35 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                             }
 
                             if (currE.segmentation.visit) {
-                                current_views[currE.segmentation.name] = p;
+                                current_views[currE.segmentation.name] = current_views[currE.segmentation.name] || [];
+                                var doc = {"index": p};
+                                if (currE.segmentation._idv) {
+                                    doc._idv = currE.segmentation._idv;
+                                }
+                                current_views[currE.segmentation.name].push(doc);
                             }
                             else {
-                                if (currE.dur > 0 && current_views[currE.segmentation.name] > -1) {
-                                    params.qstring.events[current_views[currE.segmentation.name]].dur += currE.dur; //add duration to this request
+                                if (current_views[currE.segmentation.name]) {
+                                    var index = current_views[currE.segmentation.name][current_views[currE.segmentation.name].length - 1].index;
+                                    if (currE.segmentation._idv) {
+                                        for (var z = current_views[currE.segmentation.name].length - 2; z >= 0; z--) {
+                                            if (current_views[currE.segmentation.name][z]._idv === currE.segmentation._idv) {
+                                                index = current_views[currE.segmentation.name][z].index;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (currE.dur) {
+                                        params.qstring.events[index].dur += currE.dur; //add duration to this request
+                                    }
+                                    for (var seg in currE.segmentation) {
+                                        if (seg !== 'dur' && seg !== "_idv") {
+                                            params.qstring.events[index].segmentation = params.qstring.events[index].segmentation || {};
+                                            params.qstring.events[index].segmentation[seg] = currE.segmentation[seg];
+                                        }
+                                    }
                                     params.qstring.events[p].dur = 0; //not use duration from this one anymore;
+                                    params.qstring.events[p].skip = true;//as we have 
                                 }
                             }
                             //App Users update
@@ -1628,24 +1842,25 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                                 if (!update.$inc) {
                                     update.$inc = {};
                                 }
-
                                 update.$inc["data.views"] = inc;
                             }
                             ob.updates.push(update);
-
                         }
                     }
                     else if (currE.key === "[CLY]_action") {
                         haveViews = true;
                     }
                 }
-
                 //filter events and call functions to get view names
                 var promises = [];
                 params.qstring.events = params.qstring.events.filter(function(currEvent) {
                     if (currEvent.timestamp) {
                         params.time = common.initTimeObj(params.appTimezone, currEvent.timestamp);
                     }
+                    if ((currEvent.key === "[CLY]_view" || currEvent.key === "[CLY]_action") && currEvent.skip) {
+                        return false;
+                    }
+
                     if (currEvent.key === "[CLY]_view") {
                         if (currEvent.segmentation && currEvent.segmentation.name) {
                             currEvent.dur = Math.round(currEvent.dur || currEvent.segmentation.dur || 0);
@@ -1671,14 +1886,14 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                     }
                     return true;
                 });
-
                 if (haveViews) {
                     common.readBatcher.getOne("views", {'_id': common.db.ObjectID(params.app_id)}, (err3, viewInfo) => {
                         //Matches correct view naming
                         Promise.all(promises).then(function(results) {
                             var runDrill = [];
-                            var haveVisit = false;
+                            var haveVisit = {};
                             var lastView = {};
+                            var segmentation = {};
                             var projection = {};
                             for (let p = 0; p < results.length; p++) {
                                 if (results[p] !== false) {
@@ -1693,13 +1908,19 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                                                 updateMultiViewParams[k] = results[p].segmentation[k];
                                             }
                                             if (Object.keys(updateMultiViewParams).length > 0 || results[p].dur) {
-                                                plugins.dispatch("/view/duration", {params: params, updateMultiViewParams: updateMultiViewParams, duration: results[p].dur, viewName: results[p].viewAlias, _ivd: results[p].segmentation._idv});
+                                                plugins.dispatch("/view/duration", {params: params, updateMultiViewParams: updateMultiViewParams, duration: results[p].dur, viewName: results[p].viewAlias, _idv: results[p].segmentation._idv});
                                             }
                                         }
                                         //geting all segment info
                                         if (results[p].segmentation.visit) {
-                                            haveVisit = true;
+                                            haveVisit[p] = true;
                                             lastView[results[p].viewAlias + '.ts'] = params.time.timestamp;
+                                            try {
+                                                segmentation[results[p].viewAlias + '.sg'] = JSON.parse(JSON.stringify(results[p].segmentation || {}));
+                                            }
+                                            catch (ee) {
+                                                log.e(ee);
+                                            }
                                             projection[results[p].viewAlias] = 1;
                                         }
                                         else {
@@ -1712,20 +1933,24 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                                 }
                             }
 
-                            if (haveVisit) {
-                                common.db.collection('app_userviews' + params.app_id).findOneAndUpdate({'_id': params.app_user.uid}, {$max: lastView}, {upsert: true, new: false, projection: projection}, function(err2, view2) {
-                                    for (let p = 0; p < results.length; p++) {
-                                        var currEvent = results[p];
-                                        recordMetrics(params, currEvent, params.app_user, view2 && view2.ok ? view2.value : null, viewInfo);
+                            if (Object.keys(haveVisit).length > 0) {
+                                common.db.collection('app_userviews' + params.app_id).findOneAndUpdate({'_id': params.app_user.uid}, {$max: lastView, "$set": segmentation}, {upsert: true, new: false, projection: projection}, function(err2, view2) {
+                                    for (let p in haveVisit) {
+                                        if (results[p] && results[p] !== false) {
+                                            var currEvent = results[p];
+                                            recordMetrics(params, currEvent, params.app_user, view2 && view2.ok ? view2.value : null, viewInfo);
+                                        }
                                     }
                                 });
                             }
-
-
                             if (runDrill.length > 0) {
                                 plugins.dispatch("/plugins/drill", {params: params, dbAppUser: params.app_user, events: runDrill});
                             }
 
+                        }, function(onfail) {
+                            log.e(JSON.stringify(onfail || ""));
+                        }).catch(function(rejection) {
+                            log.e(rejection);
                         });
                         resolve();
                     });
@@ -1803,6 +2028,9 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                         currEvent.viewAlias = escapedMetricVal;
                         resolve(currEvent);
                     }
+                    else {
+                        resolve(false);
+                    }
                 });
             }
             else if (currEvent.segmentation.view) {
@@ -1811,6 +2039,9 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                     if (view) {
                         currEvent.viewAlias = common.db.encode(view._id + "");
                         resolve(currEvent);
+                    }
+                    else {
+                        resolve(false);
                     }
                 });
             }
@@ -1831,6 +2062,7 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
     function recordMetrics(params, currEvent, user, view, viewInfo) {
         viewInfo = viewInfo || {};
         viewInfo.segments = viewInfo.segments || {};
+        viewInfo.omit = viewInfo.omit || [];
 
         //making sure metrics are strings
         // tmpSet["meta_v2." + tmpMetric.set + "." + escapedMetricVal] = true;
@@ -1860,7 +2092,7 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                     segKey = "platform";
                 }
                 let tmpSegVal = currEvent.segmentation[segKey] + "";
-                if (!(escapedViewSegments[segKey] === true)) {
+                if (!(escapedViewSegments[segKey] === true) && !(Array.isArray(viewInfo.omit) && viewInfo.omit.indexOf(segKey) !== -1)) {
                     if (!viewInfo.segments[segKey] && (segKey === 'platform' || Object.keys(viewInfo.segments).length < plugins.getConfig("views").segment_limit)) {
                         viewInfo.segments[segKey] = {};
                     }
@@ -1868,23 +2100,28 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                     if (forbiddenSegValues.indexOf(tmpSegVal) !== -1) {
                         tmpSegVal = "[CLY]" + tmpSegVal;
                     }
-                    currEvent.segmentation[segKey] = tmpSegVal;
 
-                    if (viewInfo.segments[segKey]) {
-                        if (viewInfo.segments[segKey][tmpSegVal]) {
-                            segmentList.push(segKey);
-                        }
-                        else {
-                            if (Object.keys(viewInfo.segments[segKey]).length >= plugins.getConfig("views").segment_value_limit) {
-                                delete currEvent.segmentation[segKey];
+                    if (tmpSegVal) {
+                        currEvent.segmentation[segKey] = tmpSegVal;
+                        if (viewInfo.segments[segKey]) {
+                            if (viewInfo.segments[segKey][tmpSegVal]) {
+                                segmentList.push(segKey);
                             }
                             else {
-                                viewInfo.segments[segKey][segKey] = true;
-                                segmentList.push(segKey);
-                                addToSetRules["segments." + segKey + "." + tmpSegVal] = true;
-                                save_structure = true;
+                                if (Object.keys(viewInfo.segments[segKey]).length >= plugins.getConfig("views").segment_value_limit) {
+                                    delete currEvent.segmentation[segKey];
+                                }
+                                else {
+                                    viewInfo.segments[segKey][segKey] = true;
+                                    segmentList.push(segKey);
+                                    addToSetRules["segments." + segKey + "." + tmpSegVal] = true;
+                                    save_structure = true;
+                                }
                             }
                         }
+                    }
+                    else {
+                        delete currEvent.segmentation[segKey];
                     }
                 }
             }
@@ -1908,6 +2145,7 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
 
             var escapedMetricVal = "";
             var viewName = currEvent.viewAlias;
+            var updateTimestamp = 0;
             if (segment !== "") {
                 escapedMetricVal = common.db.encode(currEvent.segmentation[segment] + "");
             }
@@ -1957,7 +2195,7 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                     if (lastViewTimestamp < (params.time.timestamp - secInHour)) {
                         tmpTimeObjMonth['d.' + params.time.day + '.' + escapedMetricVal + common.dbMap.unique] = 1;
                     }
-                    if (lastViewDate.year() === params.time.yearly && lastMoment.isoWeek() < params.time.weeklyISO) {
+                    if ((lastViewDate.year() + "") === (params.time.yearly + "") && lastMoment.isoWeek() < params.time.weeklyISO) {
                         tmpTimeObjZero["d.w" + params.time.weeklyISO + '.' + escapedMetricVal + common.dbMap.unique] = 1;
                     }
 
@@ -1968,8 +2206,12 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                     if (lastViewTimestamp < (params.time.timestamp - secInYear)) {
                         tmpTimeObjZero['d.' + escapedMetricVal + common.dbMap.unique] = 1;
                     }
+                    if (params.time.timestamp > lastViewTimestamp) {
+                        updateTimestamp = params.time.timestamp;
+                    }
                 }
                 else {
+                    updateTimestamp = params.time.timestamp;
                     common.fillTimeObjectZero({"time": {"weekly": params.time.weeklyISO || params.time.weekly, "yearly": params.time.yearly, "month": params.time.month }}, tmpTimeObjZero, escapedMetricVal + common.dbMap.unique);
                     common.fillTimeObjectMonth(params, tmpTimeObjMonth, escapedMetricVal + common.dbMap.unique, 1, true);
                 }
@@ -2037,6 +2279,9 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                 common.writeBatcher.add(colName, tmpMonthId, update);
                 // common.writeBatcher.add(colName, tmpMonthId + "_m", update2);
             }
+        }
+        if (updateTimestamp) {
+            view[viewName] = updateTimestamp;
         }
     }
 
@@ -2177,7 +2422,10 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
             var params = ob.params;
             var data = ob.widget;
             var allApps = data.apps;
-
+            var customPeriod = data.custom_period;
+            if (customPeriod && typeof customPeriod === 'object') {
+                customPeriod = JSON.stringify(data.custom_period);
+            }
             if (data.widget_type === "analytics" && data.data_type === "views") {
                 var appId = data.apps[0];
                 var paramsObj = {
@@ -2185,7 +2433,7 @@ const escapedViewSegments = { "name": true, "segment": true, "height": true, "wi
                     app: allApps[appId],
                     appTimezone: allApps[appId] && allApps[appId].timezone,
                     qstring: {
-                        period: data.custom_period || params.qstring.period
+                        period: customPeriod || params.qstring.period
                     },
                     time: common.initTimeObj(allApps[appId] && allApps[appId].timezone),
                     member: params.member

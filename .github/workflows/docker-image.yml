@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         
       - name: Set output
         id: vars
@@ -129,4 +129,4 @@ jobs:
         with:
           push: true
           file: ./Dockerfile-core
-          tags: countly/countly-core:latest,countly/countly-core:${{ steps.vars.outputs.tag }}
+          tags: countly/countly-core:latest,countly/countly-core:${{ steps.vars.outputs.tag }},countly/countly-core:pipelines-${{ github.base_ref || github.ref_name }}

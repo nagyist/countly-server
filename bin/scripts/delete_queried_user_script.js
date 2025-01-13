@@ -26,7 +26,7 @@ var QUERY = {
     "hasInfo": { "$ne": true } // anonymous user
 };
 var pluginManager = require("./plugins/pluginManager.js");
-var request = require('request');
+var request = require('countly-request')(pluginManager.getConfig("security"));
 var DB = 'countly';
 var COLLECTION_NAME = "app_users" + APP_ID; // do not change
 /**
@@ -55,8 +55,7 @@ function sendRequest(params, callback) {
         const options = {
             uri: url.href,
             method: params.requestType,
-            json: true,
-            body: body,
+            json: body,
             strictSSL: false
         };
         request(options, function(error, response) {

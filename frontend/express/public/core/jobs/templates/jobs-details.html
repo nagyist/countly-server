@@ -1,10 +1,9 @@
 <div v-bind:class="[componentId]">
-    <cly-header>
+    <cly-header
+        :title="job_name"
+    >
         <template v-slot:header-top>
             <cly-back-link :title="i18n('plugins.back')"></cly-back-link>
-        </template>
-        <template v-slot:header-left>
-            <h2> {{job_name}} </h2>
         </template>
     </cly-header>
     <cly-main>
@@ -35,7 +34,7 @@
                     </el-table-column>    
                     <el-table-column prop="dataAsString" :label="i18n('jobs.job-data')">
                         <template slot-scope="scope">
-                            <pre>{{scope.row.dataAsString}}</pre>
+                            <pre class="has-ellipsis" v-tooltip="scope.row.dataAsString">{{scope.row.dataAsString}}</pre>
                         </template>
                     </el-table-column>
                     <el-table-column sortable="custom" prop="duration" :label="i18n('jobs.run-duration')">

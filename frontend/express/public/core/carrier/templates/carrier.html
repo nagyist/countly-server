@@ -1,12 +1,9 @@
 
 <div v-bind:class="[componentId]">
-    <cly-header>
-        <template v-slot:header-left>
-            <h2> {{i18n('carriers.title')}} 
-            </h2>
-            <span class="cly-vue-tooltip-icon ion ion-help-circled" style="margin-left:10px" v-tooltip.top-center="description">
-            </span>
-        </template>
+    <cly-header
+		:title="i18n('carriers.title')"
+		:tooltip="{description, placement: 'top-center'}"
+	>
 		<template v-slot:header-right>
           <cly-more-options v-if="topDropdown" size="small">
             <el-dropdown-item :key="idx" v-for="(item, idx) in topDropdown">
@@ -21,10 +18,10 @@
 		<cly-section>
 			<div class="bu-columns bu-is-gapless technology-pie-graphs">
 				<div class="bu-column bu-is-6">
-					<cly-chart-pie :option="pieOptionsNew" :showToggle="false" v-loading="isLoading" :force-loading="isLoading"></cly-chart-pie>
+					<cly-chart-pie test-id="pie-new" :option="pieOptionsNew" :showToggle="false" v-loading="isLoading" :force-loading="isLoading"></cly-chart-pie>
 				</div>
 				<div class="bu-column bu-is-6">
-					<cly-chart-pie :option="pieOptionsTotal" :showToggle="false" v-loading="isLoading" :force-loading="isLoading"></cly-chart-pie>
+					<cly-chart-pie test-id="pie-total" :option="pieOptionsTotal" :showToggle="false" v-loading="isLoading" :force-loading="isLoading"></cly-chart-pie>
 				</div>
 			</div>
 		</cly-section>

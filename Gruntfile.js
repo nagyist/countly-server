@@ -130,6 +130,7 @@ module.exports = function(grunt) {
                     'frontend/express/public/javascripts/countly/countly.total.users.js',
                     'frontend/express/public/javascripts/countly/countly.app.users.js',
                     'frontend/express/public/javascripts/countly/countly.view.js',
+                    'frontend/express/public/javascripts/countly/countly.cms.js',
                     'frontend/express/public/javascripts/countly/vue/core.js',
                     'frontend/express/public/javascripts/countly/vue/container.js',
                     'frontend/express/public/javascripts/countly/countly.template.js',
@@ -149,6 +150,8 @@ module.exports = function(grunt) {
                     'frontend/express/public/javascripts/countly/vue/components/drawer.js',
                     'frontend/express/public/core/notes/javascripts/countly.models.js',
                     'frontend/express/public/core/notes/javascripts/countly.common.notes.js',
+                    'frontend/express/public/core/date-presets/javascripts/countly.models.js',
+                    'frontend/express/public/core/date-presets/javascripts/countly.views.js',
                     'frontend/express/public/javascripts/countly/vue/components/vis.js',
                     'frontend/express/public/javascripts/countly/vue/components/helpers.js',
                     'frontend/express/public/javascripts/countly/vue/components/sidebar.js',
@@ -194,7 +197,10 @@ module.exports = function(grunt) {
                     'frontend/express/public/core/geo-countries/javascripts/countly.widgets.geo.js',
                     'frontend/express/public/core/home/javascripts/countly.models.js',
                     'frontend/express/public/core/home/javascripts/countly.views.js',
-                    'frontend/express/public/core/notes/javascripts/countly.views.js'
+                    'frontend/express/public/core/notes/javascripts/countly.views.js',
+                    'frontend/express/public/core/version-history/javascripts/countly.views.js',
+                    'frontend/express/public/core/onboarding/javascripts/countly.models.js',
+                    'frontend/express/public/core/onboarding/javascripts/countly.views.js'
                 ],
                 dest: 'frontend/express/public/javascripts/min/countly.lib.concat.js'
             }
@@ -235,7 +241,7 @@ module.exports = function(grunt) {
                         'frontend/express/public/javascripts/dom/drop/drop-theme-countly.min.css',
                         'frontend/express/public/javascripts/utils/tooltipster/tooltipster.bundle.min.css',
                         'frontend/express/public/stylesheets/bulma/bulma-custom.css',
-                        'frontend/express/public/stylesheets/styles/manifest.css',
+                        'frontend/express/public/stylesheets/styles/manifest2.css',
                         'frontend/express/public/stylesheets/vue/element-tiptap.css',
                     ]
                 }
@@ -318,10 +324,37 @@ module.exports = function(grunt) {
 
     grunt.registerTask('default', ['mochaTest']);
 
-    grunt.registerTask('dist', ['sass', 'concat', 'uglify', 'cssmin']);
+    grunt.registerTask('replace-paths', 'Replace image paths in prod CSS files', function() {
+        var cssFiles = [
+            {
+                filepath: 'frontend/express/public/stylesheets/styles/manifest.css',
+                lookup: '../../images',
+                replacement: '../images',
+                newPath: 'frontend/express/public/stylesheets/styles/manifest2.css'
+            }
+        ];
+
+        cssFiles.forEach(function(file) {
+            var content = grunt.file.read(file.filepath);
+            var newContent = content.replace(/\.\.\/\.\.\/images/g, file.replacement);
+            grunt.file.write(file.newPath, newContent);
+            grunt.log.writeln('Processed file: ' + file.filepath);
+        });
+    });
+
+    grunt.registerTask('dist', ['sass', 'concat', 'uglify', 'replace-paths', 'cssmin']);
 
     grunt.registerTask('plugins', 'Minify plugin JS / CSS files and copy images', function() {
-        var plugins = require('./plugins/plugins.json'), js = [], css = [], img = [], fs = require('fs'), path = require('path');
+        var js = [], css = [], img = [], fs = require('fs'), path = require('path');
+
+        var pluginFolderPath = path.join(__dirname, 'plugins');
+        //read all folder names
+        var plugins = fs.readdirSync(pluginFolderPath);
+        //filter out only folders
+        plugins = plugins.filter(function(file) {
+            return fs.statSync(path.join(pluginFolderPath, file)).isDirectory();
+        });
+
         console.log('Preparing production files for following plugins: %j', plugins);
 
         if (plugins.indexOf('drill') !== -1 && plugins.indexOf('users') !== -1 && plugins.indexOf('push') !== -1) {
@@ -432,7 +465,16 @@ module.exports = function(grunt) {
     });
 
     grunt.registerTask('locales', 'Concat all locale files into one', function() {
-        var plugins = require('./plugins/plugins.json'), locales = {}, fs = require('fs'), path = require('path');
+        var locales = {}, fs = require('fs'), path = require('path');
+
+        var pluginFolderPath = path.join(__dirname, 'plugins');
+        //read all folder names
+        var plugins = fs.readdirSync(pluginFolderPath);
+        //filter out only folders
+        plugins = plugins.filter(function(file) {
+            return fs.statSync(path.join(pluginFolderPath, file)).isDirectory();
+        });
+
         console.log('Preparing locale files for core & plugins: %j', plugins);
 
         var pushLocaleFile = function(name, path) {

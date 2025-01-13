@@ -111,7 +111,7 @@ countly_upgrade (){
     countly_root ;
     if [ $# -eq 0 ]
     then
-        INOFFLINEMODE=$(countly config 'api.offline_mode' | awk -F'= ' '{print $2}')
+        INOFFLINEMODE=$(countly config 'api.offline_mode' | awk '/=/{print $NF}')
 
         if [ "$INOFFLINEMODE" == "false" ]
         then
@@ -202,7 +202,7 @@ countly_upgrade (){
             if [ "$VERSION" == "$NEW_VERSION" ]; then
                 cp -Rf "$DIR/../../"plugins/plugins.default.json "$DIR/../../"plugins/plugins.ce.json
 
-                echo "Extracting Countly Enterprise Edition..."
+                echo "Extracting Countly Enterprise..."
                 (cd "$DIR/../../../";
                 tar -zxf "${FILE}";)
 
@@ -217,12 +217,12 @@ countly_upgrade (){
                 echo "Upgrading Countly..."
                 countly upgrade
             else
-                echo "Version mismatch detected! Version of Countly Community Edition should be the same with Enterprise Edition. Please upgrade Countly to  Community Edition v${NEW_VERSION} first."
-                echo "Community Edition v${VERSION}"
-                echo "Enterprise Edition v${NEW_VERSION}"
+                echo "Version mismatch detected! Version of Countly Lite should be the same with Countly Enterprise. Please upgrade Countly to Countly Lite v${NEW_VERSION} first."
+                echo "Countly Lite v${VERSION}"
+                echo "Countly Enterprise v${NEW_VERSION}"
             fi
         else
-            echo "Error: Couldn't find any Enterprise Edition package, you should place archive file into '$(cd "$DIR/../../../"; pwd;)'"
+            echo "Error: Couldn't find any Countly Enterprise package, you should place archive file into '$(cd "$DIR/../../../"; pwd;)'"
         fi
     elif [ "$1" == "ce" ]
     then
@@ -233,7 +233,7 @@ countly_upgrade (){
             NEW_VERSION="$(grep -oP 'version:\s*"\K[0-9\.]*' "/tmp/countly/frontend/express/version.info.js")"
             rm -rf /tmp/countly
 
-            echo -e "\e[91m\n\n                        !!!   WARNING   !!!          \n\nYou are going to downgrade from Enterprise Edition to Community Edition;\nthis will disable all Enterprise Edition plugins, delete all Enterprise\nEdition plugins and also will drop 'countly_drill' database since it contains\ndata for Enterprise Edition features.\e[0m"
+            echo -e "\e[91m\n\n                        !!!   WARNING   !!!          \n\nYou are going to downgrade from Countly Enterprise to Countly Lite;\nthis will disable all Countly Enterprise plugins, delete all Enterprise\nEdition plugins and also will drop 'countly_drill' database since it contains\ndata for Countly Enterprise features.\e[0m"
             read -r -p "Are you sure you want to continue? [y/N] " response
             if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]
             then
@@ -244,7 +244,7 @@ countly_upgrade (){
                 if [ "$VERSION" == "$NEW_VERSION" ]; then
                     cp -Rf "$DIR/../../"plugins/plugins.json "$DIR/../../"plugins/plugins.ee.json
 
-                    echo "Extracting Countly Community Edition..."
+                    echo "Extracting Countly Lite..."
                     (cd "$DIR/../../../";
                     tar -zxf "${FILE}";)
                     bash "$DIR/../scripts/detect.init.sh"
@@ -261,21 +261,21 @@ countly_upgrade (){
                     ## shellcheck requires variables and commands in double quote and this also add single quotes
                     ## to command, so that's why I prepared whole command as variable and provide it to bash
                     MONGO_URI="$(countly mongo)"
-                    DROP_COMMAND="mongo ${MONGO_URI} --eval 'db.getSiblingDB(\"countly_drill\").dropDatabase();'"
+                    DROP_COMMAND="mongosh ${MONGO_URI} --eval 'db.getSiblingDB(\"countly_drill\").dropDatabase();'"
                     echo "Dropping 'countly_drill' database..."
                     bash -c "${DROP_COMMAND}"
 
                     echo "Upgrading Countly..."
                     countly upgrade
                 else
-                    echo "Version mismatch detected! Version of Enterprise Community Edition should be the same with Community Edition. Please upgrade Countly to  Enterprise Edition v${NEW_VERSION} first."
-                    echo "Enterprise Edition v${VERSION}"
-                    echo "Community Edition v${NEW_VERSION}"
+                    echo "Version mismatch detected! Version of Countly Enterprise should be the same with Countly Lite. Please upgrade Countly to Countly Enterprise v${NEW_VERSION} first."
+                    echo "Countly Enterprise v${VERSION}"
+                    echo "Countly Lite v${NEW_VERSION}"
                     echo -e "\nYou can run the command below & 'countly upgrade ce' again if you think core of Countly v${VERSION} is compatible to work with v${NEW_VERSION}.\nsed -i 's/version: \"${VERSION}\"/version: \"${NEW_VERSION}\"/g' $(countly dir)/frontend/express/version.info.js\n"
                 fi
             fi
         else
-            echo "Error: Couldn't find any Community Edition package, you should place archive file into '$(cd "$DIR/../../../"; pwd;)'"
+            echo "Error: Couldn't find any Countly Lite package, you should place archive file into '$(cd "$DIR/../../../"; pwd;)'"
         fi
     elif [ "$1" == "help" ]
     then
@@ -292,8 +292,8 @@ countly_upgrade (){
         echo "    countly upgrade version <from> <to> [-y]         # run all upgrade scripts between provided versions";
         echo "    countly upgrade version fs <from> <to> [-y]      # run all filesystem upgrade scripts between provided versions";
         echo "    countly upgrade version db <from> <to> [-y]      # run all database upgrade scripts between provided versions";
-        echo "    countly upgrade ee                               # upgrade from Community Edition to Enterprise Edition within the same version";
-        echo "    countly upgrade ce                               # upgrade from Enterprise Edition to Community Edition within the same version";
+        echo "    countly upgrade ee                               # upgrade from Countly Lite to Countly Enterprise within the same version";
+        echo "    countly upgrade ce                               # upgrade from Countly Enterprise to Countly Lite within the same version";
         echo "    countly upgrade help                             # this command";
     fi
 }
@@ -374,6 +374,7 @@ countly_backupfiles (){
     (mkdir -p "$1" ;
     cd "$1" ;
     echo "Backing up Countly configurations and files...";
+    mkdir -p files/nginx;
     mkdir -p files/extend ;
     mkdir -p files/frontend/express/public/appimages ;
     mkdir -p files/frontend/express/public/userimages ;
@@ -421,6 +422,12 @@ countly_backupfiles (){
             cp -a "$d/crashsymbols/." "files/plugins/$PLUGIN/crashsymbols/" ;
         fi
     done
+    if [ -f /etc/nginx/sites-available/default ]; then
+        cp /etc/nginx/sites-available/default files/nginx
+    elif [ -f /etc/nginx/conf.d/default.conf ]; then
+        cp /etc/nginx/conf.d/default.conf files/nginx
+    fi
+    cp /etc/nginx/nginx.conf files/nginx
     )
 }
 
@@ -580,6 +587,13 @@ countly_restorefiles (){
                 cp -a "$d/crashsymbols/." "$DIR/../../plugins/$PLUGIN/crashsymbols/" ;
             fi
         done
+
+        if [ -f /etc/nginx/sites-available/default ]; then
+            cp files/nginx/default /etc/nginx/sites-available/default
+        elif [ -f /etc/nginx/conf.d/default.conf ]; then
+            cp files/nginx/default.conf /etc/nginx/conf.d/default.conf
+        fi
+        cp files/nginx/nginx.conf /etc/nginx/nginx.conf
         )
     else
         echo "No files to restore from";
