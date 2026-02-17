@@ -1,5 +1,10 @@
-## Version 25.03.XX
+## Version 25.03.35
+Fixes:
+- [core] Fixes for search bar in standart table component
+
 Enterprise fixes:
+- [journeys] Fixes for journey data updates on incoming data.
+- [surveys] Return error message if invalid widget_id passed on template loading
 - [users] Show content and journey events in user profile
 
 ## Version 25.03.34
