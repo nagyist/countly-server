@@ -169,7 +169,7 @@
                 method: 'views',
                 action: 'getTable',
                 visibleColumns: JSON.stringify(context.state.params.selectedDynamicCols),
-                period: countlyCommon.getPeriodForAjax(),
+                period: countlyCommon.getPeriodAsDateStrings()
             };
             data = data || {};
             var selectedInfo = context.getters.selectedData;
