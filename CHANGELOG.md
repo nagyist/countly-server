@@ -1,3 +1,8 @@
+## Version 25.03.36
+Enterprise fixes:
+- [journey] Workflow fixes
+- [users] UI events table fixes
+
 ## Version 25.03.35
 Fixes:
 - [core] Fixes for search bar in standart table component
