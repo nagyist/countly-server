@@ -1,3 +1,8 @@
+## Version 25.03.36
+Enterprise fixes:
+- [journey] Workflow fixes
+- [users] UI events table fixes
+
 ## Version 25.03.35
 Fixes:
 - [core] Fixes for search bar in standart table component
@@ -6,6 +11,9 @@ Enterprise fixes:
 - [journeys] Fixes for journey data updates on incoming data.
 - [surveys] Return error message if invalid widget_id passed on template loading
 - [users] Show content and journey events in user profile
+- [users] Display profile group name in table column
+- [users] When exporting user profiles, replace user name with device id if user name does not exist
+- [users] Use user profile endpoint for exporting data instead of the generic export endpoint
 
 ## Version 25.03.34
 Fixes:
